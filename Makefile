@@ -9,6 +9,16 @@ OCUKPLAT ?= qemu
 # Target architecture: x86_64 or arm64
 OCUKARCH ?= x86_64
 STDARCH := $(subst arm64,aarch64,$(OCUKARCH))
+# C cross-toolchain prefix for the Unikraft backend. macOS defaults to a hosted
+# GNU cross-gcc: OCaml 5's configure POSIX-threads probe rejects a bare-metal
+# <arch>-elf- gcc. Set CROSS_COMPILE explicitly to override (eg on Linux).
+ifeq ($(shell uname -s),Darwin)
+CROSS_COMPILE ?= $(STDARCH)-linux-gnu-
+endif
+# Forward to the Unikraft sub-build only when set (a default is not exported).
+ifneq ($(strip $(CROSS_COMPILE)),)
+UKCROSS := CROSS_COMPILE="$(CROSS_COMPILE)"
+endif
 # Unikraft external libraries (musl, lwip) to include
 OCUKEXTLIBS ?= musl
 # Options for the configuration (available options: debug, 9pfs)
@@ -149,6 +159,7 @@ endif
 
 UKMAKE := umask 0022 && \
    $(MAKE) -C $(BEBLDLIBDIR) \
+       $(UKCROSS) \
        CONFIG_UK_BASE="$(UNIKRAFT)/" \
        O="$$PWD/$(BEBLDLIBDIR)/" \
        A="$$PWD/dummykernel/" \
