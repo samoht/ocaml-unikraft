@@ -317,11 +317,12 @@ build: [
     "OCUKCUSTOMCFGDIR=%%{ocaml-unikraft-custom-configs:share}%%"
       {ocaml-unikraft-custom-configs:installed}
     "UK_CFLAGS=-std=gnu11"
+    "CROSS_COMPILE=%s-unknown-linux-gnu-" {os = "macos"}
     "%%{name}%%.install"
   ]
 ]
 |}
-        short_name arch;
+        short_name arch (prefix_arch arch);
       if !repository_layout then
         Printf.fprintf out
           {|x-ci-accept-failures: [
@@ -404,6 +405,7 @@ build: [
     "LIB=%%{lib}%%"
     "SHARE=%%{share}%%"
     "OCUKARCH=%s"
+    "OCAMLCONFIGUREEXTRA=--disable-function-sections" {os = "macos"}
     "%%{name}%%.install"
   ]
 ]

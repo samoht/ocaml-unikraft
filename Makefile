@@ -299,7 +299,8 @@ ocaml/Makefile.config: $(TOOLCHAIN) | ocaml
 		--with-additional-stublibsdir \
 		--with-relative-libdir \
 		--enable-runtime-search \
-		--enable-runtime-search-target
+		--enable-runtime-search-target \
+		$(OCAMLCONFIGUREEXTRA)
 
 $(OCAMLBUILT): ocaml/Makefile.config | _build
 	PATH="$$PWD/$(BLDBIN):$$PATH" \
