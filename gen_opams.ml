@@ -260,7 +260,21 @@ for it for your distribution."""
     {failure}
 x-maintenance-intent: ["(latest)"]
 |}
-          cmd cmd cmd deb_arch pfx_arch pfx_arch pfx_arch)
+          cmd cmd cmd deb_arch pfx_arch pfx_arch pfx_arch;
+        match (!repository_layout, arch) with
+        | true, "arm64" ->
+            Printf.fprintf out
+              {|x-ci-accept-failures: [
+  "alpine-3.22"
+  "centos-9"
+  "centos-10"
+  "opensuse-15.6"
+  "opensuse-tumbleweed"
+  "freebsd-14.3"
+  "macos-homebrew"
+]
+|}
+        | _ -> ())
 
 let backend_package arch backend =
   let short_name, long_name = backend in
@@ -307,7 +321,15 @@ build: [
   ]
 ]
 |}
-        short_name arch)
+        short_name arch;
+      if !repository_layout then
+        Printf.fprintf out
+          {|x-ci-accept-failures: [
+  "debian-11" "opensuse-15.6"
+  # Unikraft 0.20.0 is incompatible with the version of GCC in those
+  # distributions
+]
+|})
 
 let option_package option =
   let short_name, long_name, conflicts = option in
