@@ -34,7 +34,7 @@
  (action
   (write-file
    "flags"
-   "(-cclib \"-z unikraft-backend=%{env:UNIKRAFTBACKEND=qemu}\")")))
+   "(-cclib -z -cclib unikraft-backend=%{env:UNIKRAFTBACKEND=qemu})")))
 
 (rule
  (enabled_if

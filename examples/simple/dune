@@ -1,6 +1,6 @@
 (executable
  (name hello)
- (flags :standard -cclib "-z unikraft-backend=qemu")
+ (flags :standard -cclib -z -cclib unikraft-backend=qemu)
  (foreign_stubs
   (language c)
   (flags :standard -z unikraft-backend=qemu)
