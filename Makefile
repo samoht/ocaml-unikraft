@@ -290,6 +290,7 @@ ocaml/Makefile.config: $(TOOLCHAIN) | ocaml
 	cd ocaml && \
 	  PATH="$$PWD/../$(BLDBIN):$$PATH" \
 	  ./configure \
+		CPPFLAGS="-DCAML_RUNTIME_EVENTS_INPROCESS" \
 		--target=$(STDARCH)-unikraft-ocaml \
 		--prefix=$(call SHQUOTE,$(prefix)/lib/$(OCAMLPKG)) \
 		--disable-shared \

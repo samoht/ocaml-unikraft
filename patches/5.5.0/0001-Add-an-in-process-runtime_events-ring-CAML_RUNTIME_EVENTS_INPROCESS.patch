@@ -1,0 +1,156 @@
+From d47847dcddd6ff7c2147d78da558cda99cdc65e0 Mon Sep 17 00:00:00 2001
+From: Thomas Gazagnaire <thomas@gazagnaire.org>
+Date: Thu, 25 Jun 2026 17:28:46 -0700
+Subject: [PATCH] Add an in-process runtime_events ring
+ (CAML_RUNTIME_EVENTS_INPROCESS)
+
+A filesystem-less target can't create the file-backed ring (ftruncate/fstat).
+Under the macro, allocate it on the heap and read it in-process; off by default.
+---
+ .../runtime_events/runtime_events_consumer.c  | 18 ++++++++--
+ runtime/caml/runtime_events.h                 |  6 ++++
+ runtime/runtime_events.c                      | 33 +++++++++++++++++--
+ 3 files changed, 52 insertions(+), 5 deletions(-)
+
+diff --git a/otherlibs/runtime_events/runtime_events_consumer.c b/otherlibs/runtime_events/runtime_events_consumer.c
+index 8b94ab4..c5da535 100644
+--- a/otherlibs/runtime_events/runtime_events_consumer.c
++++ b/otherlibs/runtime_events/runtime_events_consumer.c
+@@ -141,7 +141,19 @@ cursor_map_ring_file(struct caml_runtime_events_cursor *cursor,
+                      char_os *ring_file)
+ {
+   int ret = 0;
+-#ifdef _WIN32
++#ifdef CAML_RUNTIME_EVENTS_INPROCESS
++  int size;
++  void *map;
++  (void)ring_file;
++  map = caml_runtime_events_inprocess_ring(&size);
++  if (map == NULL) {
++    ret = E_MAP_FAILURE;
++    return ret;
++  }
++  cursor->map = map;
++  cursor->ring_file_size_bytes = size;
++  return E_SUCCESS;
++#elif defined(_WIN32)
+   HANDLE ring_file_handle = CreateFile(ring_file,
+                                        GENERIC_READ | GENERIC_WRITE,
+                                        FILE_SHARE_READ | FILE_SHARE_WRITE,
+@@ -231,7 +243,9 @@ cursor_map_ring_file(struct caml_runtime_events_cursor *cursor,
+ /* unmaps the ring file from a cursor */
+ static void cursor_unmap_ring_file(struct caml_runtime_events_cursor *cursor)
+ {
+-#ifdef _WIN32
++#ifdef CAML_RUNTIME_EVENTS_INPROCESS
++  (void)cursor;
++#elif defined(_WIN32)
+   UnmapViewOfFile(cursor->map);
+   CloseHandle(cursor->ring_file_handle);
+   CloseHandle(cursor->ring_handle);
+diff --git a/runtime/caml/runtime_events.h b/runtime/caml/runtime_events.h
+index a230171..4db3969 100644
+--- a/runtime/caml/runtime_events.h
++++ b/runtime/caml/runtime_events.h
+@@ -315,6 +315,12 @@ void caml_runtime_events_destroy(void);
+    in a forked child */
+ CAMLextern void caml_runtime_events_post_fork(void);
+ 
++#ifdef CAML_RUNTIME_EVENTS_INPROCESS
++/* The in-process ring buffer, and its size via [size], for a filesystem-less
++   target. */
++CAMLextern void* caml_runtime_events_inprocess_ring(int* size);
++#endif
++
+ /* Return the path of the ring buffers file of this process, or NULL
+    if runtime events are not enabled. This is used in the consumer to
+    read the ring buffers of the current process. Always returns a
+diff --git a/runtime/runtime_events.c b/runtime/runtime_events.c
+index b3c2964..3e44d38 100644
+--- a/runtime/runtime_events.c
++++ b/runtime/runtime_events.c
+@@ -158,7 +158,10 @@ void caml_runtime_events_init(void) {
+    unless we are sure there is only a single domain running (e.g after a fork)
+ */
+ static void runtime_events_teardown_from_stw_single(int remove_file) {
+-#ifdef _WIN32
++#ifdef CAML_RUNTIME_EVENTS_INPROCESS
++    (void)remove_file;
++    caml_stat_free(current_metadata);
++#elif defined(_WIN32)
+     UnmapViewOfFile(current_metadata);
+     CloseHandle(ring_file_handle);
+     CloseHandle(ring_handle);
+@@ -182,6 +185,15 @@ static void runtime_events_teardown_from_stw_single(int remove_file) {
+     atomic_store_release(&runtime_events_enabled, 0);
+ }
+ 
++#ifdef CAML_RUNTIME_EVENTS_INPROCESS
++CAMLexport void* caml_runtime_events_inprocess_ring(int* size)
++{
++  if (size != NULL)
++    *size = current_ring_total_size;
++  return current_metadata;
++}
++#endif
++
+ void caml_runtime_events_post_fork(void) {
+   /* We are here in the child process after a call to fork (which can only
+      happen when there is a single domain) and no mutator code that can spawn a
+@@ -207,7 +219,12 @@ void caml_runtime_events_post_fork(void) {
+    freshly-allocated string. */
+ char_os* caml_runtime_events_current_location(void) {
+   if( atomic_load_acquire(&runtime_events_enabled) ) {
++#ifdef CAML_RUNTIME_EVENTS_INPROCESS
++    /* No backing file: the path is unused, but the cursor setup strdup's it. */
++    return caml_stat_strdup_noexc_os(T("inprocess"));
++#else
+     return caml_stat_strdup_noexc_os(current_ring_loc);
++#endif
+   } else {
+     return NULL;
+   }
+@@ -239,13 +256,16 @@ static void runtime_events_create_from_stw_single(void) {
+   /* Don't initialise runtime_events twice */
+   if (!atomic_load_acquire(&runtime_events_enabled)) {
+     int ring_headers_length, ring_data_length;
+-#ifdef _WIN32
++#ifdef CAML_RUNTIME_EVENTS_INPROCESS
++    long int pid = 0;
++#elif defined(_WIN32)
+     DWORD pid = GetCurrentProcessId();
+ #else
+     int ring_fd, ret;
+     long int pid = getpid();
+ #endif
+ 
++#ifndef CAML_RUNTIME_EVENTS_INPROCESS
+     current_ring_loc = caml_stat_alloc(RUNTIME_EVENTS_MAX_MSG_LENGTH);
+ 
+     if (runtime_events_path) {
+@@ -255,6 +275,7 @@ static void runtime_events_create_from_stw_single(void) {
+       snprintf_os(current_ring_loc, RUNTIME_EVENTS_MAX_MSG_LENGTH,
+                   T("%ld.events"), pid);
+     }
++#endif
+ 
+     current_ring_total_size =
+         RUNTIME_EVENTS_MAX_CUSTOM_EVENTS *
+@@ -263,7 +284,13 @@ static void runtime_events_create_from_stw_single(void) {
+                         sizeof(struct runtime_events_buffer_header)) +
+         sizeof(struct runtime_events_metadata_header);
+ 
+-#ifdef _WIN32
++#ifdef CAML_RUNTIME_EVENTS_INPROCESS
++    /* No filesystem (freestanding/unikernel): the ring needs no backing file. */
++    current_metadata = caml_stat_alloc_noexc(current_ring_total_size);
++    if (current_metadata == NULL)
++      caml_fatal_error("Unable to allocate ring buffer");
++    memset(current_metadata, 0, current_ring_total_size);
++#elif defined(_WIN32)
+     ring_file_handle = CreateFile(
+       current_ring_loc,
+       GENERIC_READ | GENERIC_WRITE,
+-- 
+2.53.0
+
