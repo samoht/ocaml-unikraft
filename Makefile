@@ -301,7 +301,7 @@ ocaml/Makefile.config: $(TOOLCHAIN) | ocaml
 		--enable-runtime-search \
 		--enable-runtime-search-target \
 		--enable-flambda \
-		$$(case "$$(ocamlc -vnum 2>/dev/null)" in 5.3.*) ;; *) echo --enable-lto ;; esac) \
+		$$(ocamlc -vnum 2>/dev/null | grep -q '^5\.3\.' || echo --enable-lto) \
 		$(OCAMLCONFIGUREEXTRA)
 
 $(OCAMLBUILT): ocaml/Makefile.config | _build
@@ -309,9 +309,7 @@ $(OCAMLBUILT): ocaml/Makefile.config | _build
 	  $(MAKE) -C ocaml crossopt \
 	    prefix=$(call SHQUOTE,$(prefix)/lib/$(OCAMLPKG)) \
 	    OLDS="-o yacc/ocamlyacc -o lex/ocamllex" \
-	    $$(case "$$(ocamlc -vnum)" in \
-	         5.5.*) echo LIBDIR=../lib/ocaml ;; \
-	       esac)
+	    $$(ocamlc -vnum | grep -q '^5\.5\.' && echo LIBDIR=../lib/ocaml)
 	touch $@
 
 OCAMLFIND_CONF := _build/unikraft_$(OCUKARCH).conf
