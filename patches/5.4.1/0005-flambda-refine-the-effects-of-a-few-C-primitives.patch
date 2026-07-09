@@ -1,0 +1,61 @@
+From 99cdc4f900047e323220276069db5bcdbfda5efb Mon Sep 17 00:00:00 2001
+From: Thomas Gazagnaire <thomas@gazagnaire.org>
+Date: Wed, 8 Jul 2026 22:05:39 -0700
+Subject: [PATCH 5/5] flambda: refine the effects of a few C primitives
+
+Mark caml_int{32,64}_float_of_bits, caml_sys_get_config, caml_sys_get_argv
+as pure, and caml_fresh_oo_id / caml_create_bytes / caml_create_string as
+effect-free with coeffects, and constant-fold *_float_of_bits. This lets
+the simplifier eliminate and share more, which -use-lto benefits from,
+though it applies to all flambda compilation.
+---
+ middle_end/flambda/simplify_primitives.ml | 14 ++++++++++++--
+ middle_end/semantics_of_primitives.ml     |  8 +++++++-
+ 2 files changed, 19 insertions(+), 3 deletions(-)
+
+diff --git a/middle_end/flambda/simplify_primitives.ml b/middle_end/flambda/simplify_primitives.ml
+index c7344db23c..c4a5ddd76a 100644
+--- a/middle_end/flambda/simplify_primitives.ml
++++ b/middle_end/flambda/simplify_primitives.ml
+@@ -225,9 +225,19 @@ let primitive (p : Clambda_primitives.primitive) (args, approxs)
+     | [A.Value_boxed_int(A.Nativeint, n)] ->
+       I.Simplify_boxed_nativeint.simplify_unop p Nativeint expr n
+     | [A.Value_boxed_int(A.Int32, n)] ->
+-      I.Simplify_boxed_int32.simplify_unop p Int32 expr n
++      begin match p with
++        | Pccall { prim_name = "caml_int32_float_of_bits" } ->
++          S.const_float_expr expr (Int32.float_of_bits n)
++        | _ ->
++          I.Simplify_boxed_int32.simplify_unop p Int32 expr n
++      end
+     | [A.Value_boxed_int(A.Int64, n)] ->
+-      I.Simplify_boxed_int64.simplify_unop p Int64 expr n
++      begin match p with
++        | Pccall { prim_name = "caml_int64_float_of_bits" } ->
++          S.const_float_expr expr (Int64.float_of_bits n)
++        | _ ->
++          I.Simplify_boxed_int64.simplify_unop p Int64 expr n
++      end
+     | [A.Value_boxed_int(A.Nativeint, n1);
+        A.Value_boxed_int(A.Nativeint, n2)] ->
+       I.Simplify_boxed_nativeint.simplify_binop p Nativeint expr n1 n2
+diff --git a/middle_end/semantics_of_primitives.ml b/middle_end/semantics_of_primitives.ml
+index e92b526089..9fedf6a2ad 100644
+--- a/middle_end/semantics_of_primitives.ml
++++ b/middle_end/semantics_of_primitives.ml
+@@ -31,8 +31,14 @@ let for_primitive (prim : Clambda_primitives.primitive) =
+       Only_generative_effects, Has_coeffects
+   | Pccall { prim_name =
+                ( "caml_format_float" | "caml_format_int" | "caml_int32_format"
+-               | "caml_nativeint_format" | "caml_int64_format" ) } ->
++               | "caml_nativeint_format" | "caml_int64_format"
++               | "caml_int64_float_of_bits" | "caml_int32_float_of_bits"
++               | "caml_sys_get_config" | "caml_sys_get_argv" ) } ->
+       No_effects, No_coeffects
++  | Pccall { prim_name =
++               ( "caml_fresh_oo_id"
++               | "caml_create_bytes" | "caml_create_string" ) } ->
++      No_effects, Has_coeffects
+   | Pccall _ -> Arbitrary_effects, Has_coeffects
+   | Praise _ -> Arbitrary_effects, No_coeffects
+   | Prunstack | Pperform | Presume | Preperform ->
