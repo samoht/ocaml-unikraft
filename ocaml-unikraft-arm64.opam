@@ -28,7 +28,6 @@ build: [
     "LIB=%{lib}%"
     "SHARE=%{share}%"
     "OCUKARCH=arm64"
-    "OCAMLCONFIGUREEXTRA=--disable-function-sections" {os = "macos"}
     "%{name}%.install"
   ]
 ]

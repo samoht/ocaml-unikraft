@@ -405,7 +405,6 @@ build: [
     "LIB=%%{lib}%%"
     "SHARE=%%{share}%%"
     "OCUKARCH=%s"
-    "OCAMLCONFIGUREEXTRA=--disable-function-sections" {os = "macos"}
     "%%{name}%%.install"
   ]
 ]
