@@ -1,13 +1,8 @@
-From 99cdc4f900047e323220276069db5bcdbfda5efb Mon Sep 17 00:00:00 2001
-From: Thomas Gazagnaire <thomas@gazagnaire.org>
-Date: Wed, 8 Jul 2026 22:05:39 -0700
-Subject: [PATCH 5/5] flambda: refine the effects of a few C primitives
+From d729c50315e70f2c05cd502c84721a90feb50a98 Mon Sep 17 00:00:00 2001
+From: t <t@t>
+Date: Thu, 9 Jul 2026 11:18:10 -0700
+Subject: [PATCH] prim
 
-Mark caml_int{32,64}_float_of_bits, caml_sys_get_config, caml_sys_get_argv
-as pure, and caml_fresh_oo_id / caml_create_bytes / caml_create_string as
-effect-free with coeffects, and constant-fold *_float_of_bits. This lets
-the simplifier eliminate and share more, which -use-lto benefits from,
-though it applies to all flambda compilation.
 ---
  middle_end/flambda/simplify_primitives.ml | 14 ++++++++++++--
  middle_end/semantics_of_primitives.ml     |  8 +++++++-

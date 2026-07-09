@@ -1,7 +1,7 @@
-From c664f26f6e3283cfe26163e90cdfd1c173a357c3 Mon Sep 17 00:00:00 2001
+From 0d1e9cec3968717065476490f306cec59a5f920b Mon Sep 17 00:00:00 2001
 From: t <t@t>
-Date: Thu, 9 Jul 2026 10:32:01 -0700
-Subject: [PATCH] flambda: refine the effects of a few C primitives
+Date: Thu, 9 Jul 2026 11:18:09 -0700
+Subject: [PATCH] prim
 
 ---
  middle_end/flambda/simplify_primitives.ml | 14 ++++++++++++--

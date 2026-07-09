@@ -1,7 +1,7 @@
-From 059327b04ec61424076b1da1a49b32bdfd7509a7 Mon Sep 17 00:00:00 2001
+From 99da14726b9ab648bee78c6fcf79ee48beacbcc9 Mon Sep 17 00:00:00 2001
 From: t <t@t>
-Date: Thu, 9 Jul 2026 10:32:01 -0700
-Subject: [PATCH] Add whole-program dead code elimination for flambda
+Date: Thu, 9 Jul 2026 11:18:09 -0700
+Subject: [PATCH] lto
 
 ---
  asmcomp/asmgen.mli                            |     6 +
@@ -14,9 +14,9 @@ Subject: [PATCH] Add whole-program dead code elimination for flambda
  configure.ac                                  |     9 +
  configure.ac.orig                             |  2928 ++
  configure.orig                                | 25996 ++++++++++++++++
- driver/compenv.ml                             |     3 +
- driver/main_args.ml                           |    28 +
- driver/main_args.mli                          |     3 +
+ driver/compenv.ml                             |     2 +
+ driver/main_args.ml                           |    11 +
+ driver/main_args.mli                          |     1 +
  driver/optmaindriver.ml                       |     2 +-
  dune                                          |     2 +-
  middle_end/compilenv.ml                       |    18 +
@@ -42,35 +42,29 @@ Subject: [PATCH] Add whole-program dead code elimination for flambda
  otherlibs/Makefile.otherlibs.common           |     3 +-
  otherlibs/systhreads/Makefile                 |     2 +-
  stdlib/Makefile                               |     2 +-
- testsuite/tests/pack-and-lto/Makefile         |    30 +
- testsuite/tests/pack-and-lto/main_warning.ml  |     2 +
- testsuite/tests/pack-and-lto/no_lto.ml        |     2 +
+ testsuite/tests/pack-and-lto/Makefile         |    22 +
  testsuite/tests/pack-and-lto/package/a.ml     |     2 +
  testsuite/tests/pack-and-lto/package/b.ml     |     2 +
  testsuite/tests/pack-and-lto/test.ml          |     3 +
  testsuite/tests/pack-and-lto/test.reference   |     5 +
- .../tests/pack-and-lto/warning.reference      |     4 +
  tools/objinfo.ml                              |     8 +-
- utils/clflags.ml                              |     2 +
- utils/clflags.mli                             |     2 +
+ utils/clflags.ml                              |     1 +
+ utils/clflags.mli                             |     1 +
  utils/config.common.ml.in                     |     1 +
  utils/config.fixed.ml                         |     1 +
  utils/config.generated.ml.in                  |     1 +
  utils/config.mli                              |     3 +
  utils/warnings.ml                             |    15 +-
  utils/warnings.mli                            |     1 +
- 55 files changed, 30048 insertions(+), 86 deletions(-)
+ 52 files changed, 30010 insertions(+), 86 deletions(-)
  create mode 100644 configure.ac.orig
- create mode 100755 configure.orig
+ create mode 100644 configure.orig
  create mode 100644 middle_end/compilenv.ml.orig
  create mode 100644 testsuite/tests/pack-and-lto/Makefile
- create mode 100644 testsuite/tests/pack-and-lto/main_warning.ml
- create mode 100644 testsuite/tests/pack-and-lto/no_lto.ml
  create mode 100644 testsuite/tests/pack-and-lto/package/a.ml
  create mode 100644 testsuite/tests/pack-and-lto/package/b.ml
  create mode 100644 testsuite/tests/pack-and-lto/test.ml
  create mode 100644 testsuite/tests/pack-and-lto/test.reference
- create mode 100644 testsuite/tests/pack-and-lto/warning.reference
 
 diff --git a/asmcomp/asmgen.mli b/asmcomp/asmgen.mli
 index b43d38559d..6c5a79813d 100644
@@ -366,7 +360,7 @@ index 66596907c5..70a488758d 100644
  
  exception Error of error
 diff --git a/asmcomp/asmpackager.ml b/asmcomp/asmpackager.ml
-index f0e2148f44..b57b284782 100644
+index f0e2148f44..d3246d686f 100644
 --- a/asmcomp/asmpackager.ml
 +++ b/asmcomp/asmpackager.ml
 @@ -26,6 +26,7 @@ type error =
@@ -404,7 +398,7 @@ index f0e2148f44..b57b284782 100644
    let ui_export_info =
      if Config.flambda then
 +      let current_ui_export_info =
-+        if !Clflags.lto then begin
++        if Config.cmx_contains_all_code then begin
 +          let codes = get_flambda_codes units in
 +          let current_unit_code =
 +            match (get_export_info ui).Export_info.code with
@@ -3506,7 +3500,7 @@ index 0000000000..856384d8ba
 +
 +AC_OUTPUT
 diff --git a/configure.orig b/configure.orig
-new file mode 100755
+new file mode 100644
 index 0000000000..a243ae55cb
 --- /dev/null
 +++ b/configure.orig
@@ -29508,72 +29502,54 @@ index 0000000000..a243ae55cb
 +
 +
 diff --git a/driver/compenv.ml b/driver/compenv.ml
-index 3fb7ad770a..363a9e215c 100644
+index 3fb7ad770a..2ceb41a3c4 100644
 --- a/driver/compenv.ml
 +++ b/driver/compenv.ml
-@@ -482,6 +482,9 @@ let read_one_param ppf position name v =
+@@ -482,6 +482,8 @@ let read_one_param ppf position name v =
  
    |  "keywords"  -> Clflags.keyword_edition := Some v
  
-+  | "lto" -> set "lto" [ Clflags.lto ] v
 +  | "use-lto" -> set "use-lto" [ Clflags.whole_program_rebuild ] v
 +
    | _ ->
      if not (List.mem name !can_discard) then begin
        can_discard := name :: !can_discard;
 diff --git a/driver/main_args.ml b/driver/main_args.ml
-index 393f9fe383..9d16fa6063 100644
+index 393f9fe383..51186e113e 100644
 --- a/driver/main_args.ml
 +++ b/driver/main_args.ml
-@@ -68,6 +68,22 @@ let mk_cmi_file f =
+@@ -68,6 +68,11 @@ let mk_cmi_file f =
    "-cmi-file", Arg.String f,
      "<file>  Use the <file> interface file to type-check"
  
-+let mk_lto f =
-+  "-lto", Arg.Unit f, " Store the flambda code in the .cmx so the program can \
-+    be optimized as a whole at link time with -use-lto (default when the \
-+    compiler was configured with --enable-lto)"
-+;;
-+
-+let mk_no_lto f =
-+  "-no-lto", Arg.Unit f, " Do not store the flambda code in the .cmx (overrides \
-+    --enable-lto for this unit)"
-+;;
-+
 +let mk_whole_program_rebuild f =
-+  "-use-lto", Arg.Unit f, " Eliminate dead code at link time. Requires cmx \
-+    files to be built using the -lto option"
++  "-use-lto", Arg.Unit f, " Eliminate dead code at link time. Requires a \
++    compiler configured with --enable-lto"
 +;;
 +
  let mk_compact f =
    "-compact", Arg.Unit f, " Optimize code size rather than speed"
  
-@@ -978,6 +994,9 @@ module type Optcommon_options = sig
+@@ -978,6 +983,7 @@ module type Optcommon_options = sig
    val _insn_sched : unit -> unit
    val _no_insn_sched : unit -> unit
    val _linscan : unit -> unit
-+  val _lto : unit -> unit
-+  val _no_lto : unit -> unit
 +  val _whole_program_rebuild : unit -> unit
    val _no_float_const_prop : unit -> unit
  
    val _clambda_checks : unit -> unit
-@@ -1269,6 +1288,9 @@ struct
+@@ -1269,6 +1275,7 @@ struct
      mk_cmi_file F._cmi_file;
      mk_clambda_checks F._clambda_checks;
      mk_classic_inlining F._classic_inlining;
-+    mk_lto F._lto;
-+    mk_no_lto F._no_lto;
 +    mk_whole_program_rebuild F._whole_program_rebuild;
      mk_color F._color;
      mk_error_style F._error_style;
      mk_compact F._compact;
-@@ -1702,6 +1724,12 @@ module Default = struct
+@@ -1702,6 +1709,10 @@ module Default = struct
      let _S = set keep_asm_file
      let _clambda_checks () = clambda_checks := true
      let _classic_inlining () = classic_inlining := true
-+    let _lto = set lto
-+    let _no_lto = clear lto
 +    let _whole_program_rebuild () =
 +      if not Config.flambda then
 +        Compenv.fatal "-use-lto is only supported by the flambda compiler";
@@ -29582,15 +29558,13 @@ index 393f9fe383..9d16fa6063 100644
      let _dalloc = set dump_regalloc
      let _dclambda = set dump_clambda
 diff --git a/driver/main_args.mli b/driver/main_args.mli
-index 96cce1ca53..9af37fc660 100644
+index 96cce1ca53..bb5eece850 100644
 --- a/driver/main_args.mli
 +++ b/driver/main_args.mli
-@@ -205,6 +205,9 @@ module type Optcommon_options = sig
+@@ -205,6 +205,7 @@ module type Optcommon_options = sig
    val _insn_sched : unit -> unit
    val _no_insn_sched : unit -> unit
    val _linscan : unit -> unit
-+  val _lto : unit -> unit
-+  val _no_lto : unit -> unit
 +  val _whole_program_rebuild : unit -> unit
    val _no_float_const_prop : unit -> unit
  
@@ -29622,7 +29596,7 @@ index dbe8af9ed9..9a05abfa09 100644
   (modules optmain))
  
 diff --git a/middle_end/compilenv.ml b/middle_end/compilenv.ml
-index 83c19ad1f9..da981784ae 100644
+index 83c19ad1f9..9692374de0 100644
 --- a/middle_end/compilenv.ml
 +++ b/middle_end/compilenv.ml
 @@ -351,9 +351,27 @@ let need_send_fun n =
@@ -29648,7 +29622,7 @@ index 83c19ad1f9..da981784ae 100644
  (* Write the description of the current unit *)
  
  let write_unit_info info filename =
-+  if Config.flambda && !Clflags.lto then
++  if Config.flambda && Config.cmx_contains_all_code then
 +    check_required_modules_are_compiled_with_lto ();
    let oc = open_out_bin filename in
    output_string oc cmx_magic_number;
@@ -30155,7 +30129,7 @@ index 0000000000..83c19ad1f9
 +
 +let report_error = Format_doc.compat report_error_doc
 diff --git a/middle_end/flambda/build_export_info.ml b/middle_end/flambda/build_export_info.ml
-index 89dcc3beca..be095185c0 100644
+index 89dcc3beca..48b51f500e 100644
 --- a/middle_end/flambda/build_export_info.ml
 +++ b/middle_end/flambda/build_export_info.ml
 @@ -524,7 +524,13 @@ let build_transient ~(backend : (module Backend_intf.S))
@@ -30164,7 +30138,7 @@ index 89dcc3beca..be095185c0 100644
      let root_symbol = Compilenv.current_unit_symbol () in
 -    Export_info.opaque_transient ~root_symbol ~compilation_unit
 +    let code =
-+      if !Clflags.lto then
++      if Config.cmx_contains_all_code then
 +        Some program
 +      else
 +        None
@@ -30178,7 +30152,7 @@ index 89dcc3beca..be095185c0 100644
          symbol_id
      in
 +    let code =
-+      if !Clflags.lto then
++      if Config.cmx_contains_all_code then
 +        Some program
 +      else
 +        None
@@ -30848,11 +30822,11 @@ index a7f2e60a7a..d161a483e7 100644
  distclean: clean
 diff --git a/testsuite/tests/pack-and-lto/Makefile b/testsuite/tests/pack-and-lto/Makefile
 new file mode 100644
-index 0000000000..62670e906c
+index 0000000000..9bcbae8a9a
 --- /dev/null
 +++ b/testsuite/tests/pack-and-lto/Makefile
-@@ -0,0 +1,30 @@
-+default: native warning
+@@ -0,0 +1,22 @@
++default: native
 +
 +native:
 +	printf " ... testing native 'test.reference':"
@@ -30865,14 +30839,6 @@ index 0000000000..62670e906c
 +	@$(DIFF) test.result test.reference >/dev/null \
 +	    && echo " => passed" || echo " => failed"
 +
-+warning:
-+	printf " ... testing warning with lto 'warning.reference':"
-+	@$(OCAMLOPT) -no-lto -c no_lto.ml
-+	@$(OCAMLOPT) -lto -c main_warning.ml 2> warning.result
-+	@$(DIFF) warning.result warning.reference >/dev/null \
-+	    && echo " => passed" || echo " => failed"
-+
-+
 +promote: defaultpromote
 +
 +clean: defaultclean
@@ -30882,22 +30848,6 @@ index 0000000000..62670e906c
 +BASEDIR=../..
 +include $(BASEDIR)/makefiles/Makefile.common
 +COMPFLAGS =
-diff --git a/testsuite/tests/pack-and-lto/main_warning.ml b/testsuite/tests/pack-and-lto/main_warning.ml
-new file mode 100644
-index 0000000000..f26f42ea29
---- /dev/null
-+++ b/testsuite/tests/pack-and-lto/main_warning.ml
-@@ -0,0 +1,2 @@
-+
-+let () = No_lto.f ()
-diff --git a/testsuite/tests/pack-and-lto/no_lto.ml b/testsuite/tests/pack-and-lto/no_lto.ml
-new file mode 100644
-index 0000000000..63824ef3f9
---- /dev/null
-+++ b/testsuite/tests/pack-and-lto/no_lto.ml
-@@ -0,0 +1,2 @@
-+
-+let f () = () [@@inline never]
 diff --git a/testsuite/tests/pack-and-lto/package/a.ml b/testsuite/tests/pack-and-lto/package/a.ml
 new file mode 100644
 index 0000000000..586c46e896
@@ -30934,16 +30884,6 @@ index 0000000000..eee942d4bf
 +Test entry
 +ok b
 +ok a
-diff --git a/testsuite/tests/pack-and-lto/warning.reference b/testsuite/tests/pack-and-lto/warning.reference
-new file mode 100644
-index 0000000000..7d97f45d3e
---- /dev/null
-+++ b/testsuite/tests/pack-and-lto/warning.reference
-@@ -0,0 +1,4 @@
-+File "_none_", line 1:
-+Warning 76 [module-without-lto]: The required module No_lto
-+  was built without -lto.
-+  Linking it in -use-lto mode will probably not be possible.
 diff --git a/tools/objinfo.ml b/tools/objinfo.ml
 index 83e3659314..39a8ff0962 100644
 --- a/tools/objinfo.ml
@@ -30964,27 +30904,25 @@ index 83e3659314..39a8ff0962 100644
    let pr_funs _ fns =
      List.iter (fun arity -> printf " %d" arity) fns in
 diff --git a/utils/clflags.ml b/utils/clflags.ml
-index bf79b30b7e..5c89478ed0 100644
+index bf79b30b7e..d3bdb88998 100644
 --- a/utils/clflags.ml
 +++ b/utils/clflags.ml
-@@ -188,6 +188,8 @@ let inlining_report = ref false    (* -inlining-report *)
+@@ -188,6 +188,7 @@ let inlining_report = ref false    (* -inlining-report *)
  
  let afl_instrument = ref Config.afl_instrument (* -afl-instrument *)
  let afl_inst_ratio = ref 100           (* -afl-inst-ratio *)
-+let lto = ref Config.cmx_contains_all_code (* -lto / -no-lto *)
 +let whole_program_rebuild = ref false  (* -use-lto *)
  
  let function_sections = ref false      (* -function-sections *)
  
 diff --git a/utils/clflags.mli b/utils/clflags.mli
-index 3e54d98ad5..bf110a5623 100644
+index 3e54d98ad5..6775334244 100644
 --- a/utils/clflags.mli
 +++ b/utils/clflags.mli
-@@ -219,6 +219,8 @@ val classic_inlining : bool ref
+@@ -219,6 +219,7 @@ val classic_inlining : bool ref
  val afl_instrument : bool ref
  val afl_inst_ratio : int ref
  val function_sections : bool ref
-+val lto : bool ref
 +val whole_program_rebuild : bool ref
  
  val all_passes : string list ref

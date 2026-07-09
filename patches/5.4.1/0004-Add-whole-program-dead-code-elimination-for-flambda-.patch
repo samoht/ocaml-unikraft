@@ -1,18 +1,8 @@
-From d746f29b503980aa6239420df787591687ac522d Mon Sep 17 00:00:00 2001
-From: Thomas Gazagnaire <thomas@gazagnaire.org>
-Date: Wed, 8 Jul 2026 22:05:39 -0700
-Subject: [PATCH 4/5] Add whole-program dead code elimination for flambda
- (-use-lto)
+From 60387508093611b60137aa67dfad7eb95ea16192 Mon Sep 17 00:00:00 2001
+From: t <t@t>
+Date: Thu, 9 Jul 2026 11:18:10 -0700
+Subject: [PATCH] lto
 
-Compiling with -lto stores each unit's full flambda code in its .cmx
-(the default when the compiler is configured with --enable-lto); linking
-with -use-lto then concatenates all the units' flambda programs, re-runs
-the middle-end over the whole program and drops everything unreachable
-from the roots. Useful for unikernels, where the whole program is known
-at link time and image size matters.
-
-Ported from EduardoRFS/ocaml 4.10+lto, with a per-unit -lto/-no-lto flag
-(defaulting to --enable-lto) instead of a compiler-wide toggle.
 ---
  asmcomp/asmgen.mli                            |   6 +
  asmcomp/asmlibrarian.ml                       |  22 ++-
@@ -22,9 +12,9 @@ Ported from EduardoRFS/ocaml 4.10+lto, with a per-unit -lto/-no-lto flag
  asmcomp/asmpackager.mli                       |   1 +
  configure                                     |  17 ++
  configure.ac                                  |   9 +
- driver/compenv.ml                             |   3 +
- driver/main_args.ml                           |  28 +++
- driver/main_args.mli                          |   3 +
+ driver/compenv.ml                             |   2 +
+ driver/main_args.ml                           |  11 ++
+ driver/main_args.mli                          |   1 +
  driver/optmaindriver.ml                       |   2 +-
  dune                                          |   2 +-
  middle_end/compilenv.ml                       |  18 ++
@@ -49,35 +39,29 @@ Ported from EduardoRFS/ocaml 4.10+lto, with a per-unit -lto/-no-lto flag
  otherlibs/Makefile.otherlibs.common           |   3 +-
  otherlibs/systhreads/Makefile                 |   2 +-
  stdlib/Makefile                               |   2 +-
- testsuite/tests/pack-and-lto/Makefile         |  30 ++++
- testsuite/tests/pack-and-lto/main_warning.ml  |   2 +
- testsuite/tests/pack-and-lto/no_lto.ml        |   2 +
+ testsuite/tests/pack-and-lto/Makefile         |  22 +++
  testsuite/tests/pack-and-lto/package/a.ml     |   2 +
  testsuite/tests/pack-and-lto/package/b.ml     |   2 +
  testsuite/tests/pack-and-lto/test.ml          |   3 +
  testsuite/tests/pack-and-lto/test.reference   |   5 +
- .../tests/pack-and-lto/warning.reference      |   4 +
  tools/objinfo.ml                              |   8 +-
- utils/clflags.ml                              |   2 +
- utils/clflags.mli                             |   2 +
+ utils/clflags.ml                              |   1 +
+ utils/clflags.mli                             |   1 +
  utils/config.common.ml.in                     |   1 +
  utils/config.fixed.ml                         |   1 +
  utils/config.generated.ml.in                  |   1 +
  utils/config.mli                              |   3 +
  utils/warnings.ml                             |  15 +-
  utils/warnings.mli                            |   1 +
- 52 files changed, 629 insertions(+), 86 deletions(-)
+ 49 files changed, 591 insertions(+), 86 deletions(-)
  create mode 100644 testsuite/tests/pack-and-lto/Makefile
- create mode 100644 testsuite/tests/pack-and-lto/main_warning.ml
- create mode 100644 testsuite/tests/pack-and-lto/no_lto.ml
  create mode 100644 testsuite/tests/pack-and-lto/package/a.ml
  create mode 100644 testsuite/tests/pack-and-lto/package/b.ml
  create mode 100644 testsuite/tests/pack-and-lto/test.ml
  create mode 100644 testsuite/tests/pack-and-lto/test.reference
- create mode 100644 testsuite/tests/pack-and-lto/warning.reference
 
 diff --git a/asmcomp/asmgen.mli b/asmcomp/asmgen.mli
-index b43d385..6c5a798 100644
+index b43d38559d..6c5a79813d 100644
 --- a/asmcomp/asmgen.mli
 +++ b/asmcomp/asmgen.mli
 @@ -36,6 +36,12 @@ val compile_implementation
@@ -94,7 +78,7 @@ index b43d385..6c5a798 100644
      ppf_dump:Format.formatter -> Cmm.phrase -> unit
  
 diff --git a/asmcomp/asmlibrarian.ml b/asmcomp/asmlibrarian.ml
-index 823b07d..74be0ea 100644
+index 823b07db3a..74be0eaf12 100644
 --- a/asmcomp/asmlibrarian.ml
 +++ b/asmcomp/asmlibrarian.ml
 @@ -26,12 +26,6 @@ type error =
@@ -134,7 +118,7 @@ index 823b07d..74be0ea 100644
  
  let create_archive file_list lib_name =
 diff --git a/asmcomp/asmlink.ml b/asmcomp/asmlink.ml
-index e8179a7..285b313 100644
+index e8179a729f..285b3138fa 100644
 --- a/asmcomp/asmlink.ml
 +++ b/asmcomp/asmlink.ml
 @@ -30,6 +30,7 @@ type error =
@@ -347,7 +331,7 @@ index e8179a7..285b313 100644
        Linkdeps.report_error_doc ~print_filename:Location.Doc.filename ppf e
  
 diff --git a/asmcomp/asmlink.mli b/asmcomp/asmlink.mli
-index 6659690..70a4887 100644
+index 66596907c5..70a488758d 100644
 --- a/asmcomp/asmlink.mli
 +++ b/asmcomp/asmlink.mli
 @@ -18,7 +18,9 @@
@@ -370,7 +354,7 @@ index 6659690..70a4887 100644
  
  exception Error of error
 diff --git a/asmcomp/asmpackager.ml b/asmcomp/asmpackager.ml
-index f0e2148..b57b284 100644
+index f0e2148f44..d3246d686f 100644
 --- a/asmcomp/asmpackager.ml
 +++ b/asmcomp/asmpackager.ml
 @@ -26,6 +26,7 @@ type error =
@@ -408,7 +392,7 @@ index f0e2148..b57b284 100644
    let ui_export_info =
      if Config.flambda then
 +      let current_ui_export_info =
-+        if !Clflags.lto then begin
++        if Config.cmx_contains_all_code then begin
 +          let codes = get_flambda_codes units in
 +          let current_unit_code =
 +            match (get_export_info ui).Export_info.code with
@@ -474,7 +458,7 @@ index f0e2148..b57b284 100644
  let () =
    Location.register_error_of_exn
 diff --git a/asmcomp/asmpackager.mli b/asmcomp/asmpackager.mli
-index 39508ce..65a0099 100644
+index 39508cec63..65a0099040 100644
 --- a/asmcomp/asmpackager.mli
 +++ b/asmcomp/asmpackager.mli
 @@ -31,6 +31,7 @@ type error =
@@ -486,7 +470,7 @@ index 39508ce..65a0099 100644
  exception Error of error
  
 diff --git a/configure b/configure
-index a6e6566..ec52f00 100755
+index a6e656668d..ec52f00c21 100755
 --- a/configure
 +++ b/configure
 @@ -815,6 +815,7 @@ windows_unicode
@@ -542,7 +526,7 @@ index a6e6566..ec52f00 100755
  then :
    CMX_MAGIC_NUMBER=Caml1999y036
 diff --git a/configure.ac b/configure.ac
-index 601f6d4..3f5fd62 100644
+index 601f6d4b57..3f5fd626ca 100644
 --- a/configure.ac
 +++ b/configure.ac
 @@ -247,6 +247,7 @@ AC_SUBST([reserved_header_bits])
@@ -576,72 +560,54 @@ index 601f6d4..3f5fd62 100644
    [CMX_MAGIC_NUMBER=CMX_FLAMBDA__MAGIC_NUMBER
    CMXA_MAGIC_NUMBER=CMXA_FLAMBDA__MAGIC_NUMBER],
 diff --git a/driver/compenv.ml b/driver/compenv.ml
-index 3fb7ad7..363a9e2 100644
+index 3fb7ad770a..2ceb41a3c4 100644
 --- a/driver/compenv.ml
 +++ b/driver/compenv.ml
-@@ -482,6 +482,9 @@ let read_one_param ppf position name v =
+@@ -482,6 +482,8 @@ let read_one_param ppf position name v =
  
    |  "keywords"  -> Clflags.keyword_edition := Some v
  
-+  | "lto" -> set "lto" [ Clflags.lto ] v
 +  | "use-lto" -> set "use-lto" [ Clflags.whole_program_rebuild ] v
 +
    | _ ->
      if not (List.mem name !can_discard) then begin
        can_discard := name :: !can_discard;
 diff --git a/driver/main_args.ml b/driver/main_args.ml
-index 393f9fe..9d16fa6 100644
+index 393f9fe383..51186e113e 100644
 --- a/driver/main_args.ml
 +++ b/driver/main_args.ml
-@@ -68,6 +68,22 @@ let mk_cmi_file f =
+@@ -68,6 +68,11 @@ let mk_cmi_file f =
    "-cmi-file", Arg.String f,
      "<file>  Use the <file> interface file to type-check"
  
-+let mk_lto f =
-+  "-lto", Arg.Unit f, " Store the flambda code in the .cmx so the program can \
-+    be optimized as a whole at link time with -use-lto (default when the \
-+    compiler was configured with --enable-lto)"
-+;;
-+
-+let mk_no_lto f =
-+  "-no-lto", Arg.Unit f, " Do not store the flambda code in the .cmx (overrides \
-+    --enable-lto for this unit)"
-+;;
-+
 +let mk_whole_program_rebuild f =
-+  "-use-lto", Arg.Unit f, " Eliminate dead code at link time. Requires cmx \
-+    files to be built using the -lto option"
++  "-use-lto", Arg.Unit f, " Eliminate dead code at link time. Requires a \
++    compiler configured with --enable-lto"
 +;;
 +
  let mk_compact f =
    "-compact", Arg.Unit f, " Optimize code size rather than speed"
  
-@@ -978,6 +994,9 @@ module type Optcommon_options = sig
+@@ -978,6 +983,7 @@ module type Optcommon_options = sig
    val _insn_sched : unit -> unit
    val _no_insn_sched : unit -> unit
    val _linscan : unit -> unit
-+  val _lto : unit -> unit
-+  val _no_lto : unit -> unit
 +  val _whole_program_rebuild : unit -> unit
    val _no_float_const_prop : unit -> unit
  
    val _clambda_checks : unit -> unit
-@@ -1269,6 +1288,9 @@ struct
+@@ -1269,6 +1275,7 @@ struct
      mk_cmi_file F._cmi_file;
      mk_clambda_checks F._clambda_checks;
      mk_classic_inlining F._classic_inlining;
-+    mk_lto F._lto;
-+    mk_no_lto F._no_lto;
 +    mk_whole_program_rebuild F._whole_program_rebuild;
      mk_color F._color;
      mk_error_style F._error_style;
      mk_compact F._compact;
-@@ -1702,6 +1724,12 @@ module Default = struct
+@@ -1702,6 +1709,10 @@ module Default = struct
      let _S = set keep_asm_file
      let _clambda_checks () = clambda_checks := true
      let _classic_inlining () = classic_inlining := true
-+    let _lto = set lto
-+    let _no_lto = clear lto
 +    let _whole_program_rebuild () =
 +      if not Config.flambda then
 +        Compenv.fatal "-use-lto is only supported by the flambda compiler";
@@ -650,21 +616,19 @@ index 393f9fe..9d16fa6 100644
      let _dalloc = set dump_regalloc
      let _dclambda = set dump_clambda
 diff --git a/driver/main_args.mli b/driver/main_args.mli
-index 96cce1c..9af37fc 100644
+index 96cce1ca53..bb5eece850 100644
 --- a/driver/main_args.mli
 +++ b/driver/main_args.mli
-@@ -205,6 +205,9 @@ module type Optcommon_options = sig
+@@ -205,6 +205,7 @@ module type Optcommon_options = sig
    val _insn_sched : unit -> unit
    val _no_insn_sched : unit -> unit
    val _linscan : unit -> unit
-+  val _lto : unit -> unit
-+  val _no_lto : unit -> unit
 +  val _whole_program_rebuild : unit -> unit
    val _no_float_const_prop : unit -> unit
  
    val _clambda_checks : unit -> unit
 diff --git a/driver/optmaindriver.ml b/driver/optmaindriver.ml
-index 0cacd33..26d6c27 100644
+index 0cacd3363a..26d6c27ccb 100644
 --- a/driver/optmaindriver.ml
 +++ b/driver/optmaindriver.ml
 @@ -126,7 +126,7 @@ let main argv ppf =
@@ -677,7 +641,7 @@ index 0cacd33..26d6c27 100644
      end;
    with
 diff --git a/dune b/dune
-index dbe8af9..9a05abf 100644
+index dbe8af9ed9..9a05abfa09 100644
 --- a/dune
 +++ b/dune
 @@ -194,7 +194,7 @@
@@ -690,7 +654,7 @@ index dbe8af9..9a05abf 100644
   (modules optmain))
  
 diff --git a/middle_end/compilenv.ml b/middle_end/compilenv.ml
-index 231abfc..502b44b 100644
+index 231abfc194..9476f9af18 100644
 --- a/middle_end/compilenv.ml
 +++ b/middle_end/compilenv.ml
 @@ -348,9 +348,27 @@ let need_send_fun n =
@@ -716,13 +680,13 @@ index 231abfc..502b44b 100644
  (* Write the description of the current unit *)
  
  let write_unit_info info filename =
-+  if Config.flambda && !Clflags.lto then
++  if Config.flambda && Config.cmx_contains_all_code then
 +    check_required_modules_are_compiled_with_lto ();
    let oc = open_out_bin filename in
    output_string oc cmx_magic_number;
    output_value oc info;
 diff --git a/middle_end/flambda/build_export_info.ml b/middle_end/flambda/build_export_info.ml
-index 89dcc3b..be09518 100644
+index 89dcc3beca..48b51f500e 100644
 --- a/middle_end/flambda/build_export_info.ml
 +++ b/middle_end/flambda/build_export_info.ml
 @@ -524,7 +524,13 @@ let build_transient ~(backend : (module Backend_intf.S))
@@ -731,7 +695,7 @@ index 89dcc3b..be09518 100644
      let root_symbol = Compilenv.current_unit_symbol () in
 -    Export_info.opaque_transient ~root_symbol ~compilation_unit
 +    let code =
-+      if !Clflags.lto then
++      if Config.cmx_contains_all_code then
 +        Some program
 +      else
 +        None
@@ -745,7 +709,7 @@ index 89dcc3b..be09518 100644
          symbol_id
      in
 +    let code =
-+      if !Clflags.lto then
++      if Config.cmx_contains_all_code then
 +        Some program
 +      else
 +        None
@@ -759,7 +723,7 @@ index 89dcc3b..be09518 100644
        ~relevant_imported_vars_within_closure
 +      ~code
 diff --git a/middle_end/flambda/closure_conversion.ml b/middle_end/flambda/closure_conversion.ml
-index 1e2fdd6..cace922 100644
+index 1e2fdd6c77..cace922a0e 100644
 --- a/middle_end/flambda/closure_conversion.ml
 +++ b/middle_end/flambda/closure_conversion.ml
 @@ -686,7 +686,7 @@ let lambda_to_flambda ~backend ~module_ident ~size lam
@@ -772,7 +736,7 @@ index 1e2fdd6..cace922 100644
    let program_body =
      List.fold_left
 diff --git a/middle_end/flambda/export_info.ml b/middle_end/flambda/export_info.ml
-index dc47be5..5a2823a 100644
+index dc47be5e1b..5a2823a0c1 100644
 --- a/middle_end/flambda/export_info.ml
 +++ b/middle_end/flambda/export_info.ml
 @@ -146,6 +146,7 @@ type t = {
@@ -860,7 +824,7 @@ index dc47be5..5a2823a 100644
  
  let find_value eid map =
 diff --git a/middle_end/flambda/export_info.mli b/middle_end/flambda/export_info.mli
-index 4068a16..d75b3cd 100644
+index 4068a168d2..d75b3cd3be 100644
 --- a/middle_end/flambda/export_info.mli
 +++ b/middle_end/flambda/export_info.mli
 @@ -95,6 +95,7 @@ type t = private {
@@ -911,7 +875,7 @@ index 4068a16..d75b3cd 100644
  
  (* CR-someday pchambart: Should we separate [t] in 2 types: one created by the
 diff --git a/middle_end/flambda/export_info_for_pack.ml b/middle_end/flambda/export_info_for_pack.ml
-index 981bdfd..a44a58e 100644
+index 981bdfda92..a44a58ee25 100644
 --- a/middle_end/flambda/export_info_for_pack.ml
 +++ b/middle_end/flambda/export_info_for_pack.ml
 @@ -42,7 +42,7 @@ let import_eid_for_pack units pack id =
@@ -932,7 +896,7 @@ index 981bdfd..a44a58e 100644
  let clear_import_state () =
    Set_of_closures_id.Tbl.clear imported_function_declarations_table;
 diff --git a/middle_end/flambda/flambda.ml b/middle_end/flambda/flambda.ml
-index d2ee65b..2f90823 100644
+index d2ee65b2fd..2f9082355a 100644
 --- a/middle_end/flambda/flambda.ml
 +++ b/middle_end/flambda/flambda.ml
 @@ -163,7 +163,7 @@ type program_body =
@@ -963,7 +927,7 @@ index d2ee65b..2f90823 100644
    (* Note that there is no need to count the [imported_symbols]. *)
    loop program.program_body;
 diff --git a/middle_end/flambda/flambda.mli b/middle_end/flambda/flambda.mli
-index 4e58505..1d4cd8d 100644
+index 4e58505b82..1d4cd8d372 100644
 --- a/middle_end/flambda/flambda.mli
 +++ b/middle_end/flambda/flambda.mli
 @@ -408,8 +408,8 @@ type program_body =
@@ -978,7 +942,7 @@ index 4e58505..1d4cd8d 100644
  
  type program = {
 diff --git a/middle_end/flambda/flambda_invariants.ml b/middle_end/flambda/flambda_invariants.ml
-index b5890fe..2bab174 100644
+index b5890fe7cc..2bab174a8f 100644
 --- a/middle_end/flambda/flambda_invariants.ml
 +++ b/middle_end/flambda/flambda_invariants.ml
 @@ -429,7 +429,7 @@ let variable_and_symbol_invariants (program : Flambda.program) =
@@ -991,7 +955,7 @@ index b5890fe..2bab174 100644
    let env =
      Symbol.Set.fold (fun symbol env ->
 diff --git a/middle_end/flambda/flambda_middle_end.ml b/middle_end/flambda/flambda_middle_end.ml
-index 6af32ec..15e5239 100644
+index 6af32ecb90..15e5239706 100644
 --- a/middle_end/flambda/flambda_middle_end.ml
 +++ b/middle_end/flambda/flambda_middle_end.ml
 @@ -212,14 +212,7 @@ let flambda_raw_clambda_dump_if ppf
@@ -1025,7 +989,7 @@ index 6af32ec..15e5239 100644
 +  in
 +  flambda_to_clambda ~backend ~ppf_dump program
 diff --git a/middle_end/flambda/flambda_middle_end.mli b/middle_end/flambda/flambda_middle_end.mli
-index 6498bf9..78b4694 100644
+index 6498bf94ad..78b46949fa 100644
 --- a/middle_end/flambda/flambda_middle_end.mli
 +++ b/middle_end/flambda/flambda_middle_end.mli
 @@ -16,6 +16,13 @@
@@ -1043,7 +1007,7 @@ index 6498bf9..78b4694 100644
  
  val lambda_to_clambda
 diff --git a/middle_end/flambda/flambda_to_clambda.ml b/middle_end/flambda/flambda_to_clambda.ml
-index 7374f0b..1629831 100644
+index 7374f0b704..16298318f4 100644
 --- a/middle_end/flambda/flambda_to_clambda.ml
 +++ b/middle_end/flambda/flambda_to_clambda.ml
 @@ -37,29 +37,37 @@ type t = {
@@ -1102,7 +1066,7 @@ index 7374f0b..1629831 100644
  let is_function_constant t closure_id =
    if Closure_id.Set.mem closure_id t.current_unit.closures then
 diff --git a/middle_end/flambda/flambda_utils.ml b/middle_end/flambda/flambda_utils.ml
-index 53c583c..c8b8b38 100644
+index 53c583cb9c..c8b8b38234 100644
 --- a/middle_end/flambda/flambda_utils.ml
 +++ b/middle_end/flambda/flambda_utils.ml
 @@ -447,7 +447,7 @@ let introduce_needed_import_symbols program : Flambda.program =
@@ -1245,7 +1209,7 @@ index 53c583c..c8b8b38 100644
 +  in
 +  replace_symbol_in_code env { program with program_body }
 diff --git a/middle_end/flambda/flambda_utils.mli b/middle_end/flambda/flambda_utils.mli
-index b47cd04..c5d93ce 100644
+index b47cd04a56..c5d93ce803 100644
 --- a/middle_end/flambda/flambda_utils.mli
 +++ b/middle_end/flambda/flambda_utils.mli
 @@ -107,7 +107,7 @@ val needed_import_symbols : Flambda.program -> Symbol.Set.t
@@ -1274,7 +1238,7 @@ index b47cd04..c5d93ce 100644
 +val replace_compilation_unit_of_symbols
 +  : Compilation_unit.t -> Flambda.program -> Flambda.program
 diff --git a/middle_end/flambda/lift_constants.ml b/middle_end/flambda/lift_constants.ml
-index 307d549..371fddb 100644
+index 307d5492d9..371fddbf48 100644
 --- a/middle_end/flambda/lift_constants.ml
 +++ b/middle_end/flambda/lift_constants.ml
 @@ -1012,7 +1012,7 @@ let lift_constants (program : Flambda.program) ~backend =
@@ -1287,7 +1251,7 @@ index 307d549..371fddb 100644
    in
    Flambda_utils.introduce_needed_import_symbols { program with program_body; }
 diff --git a/middle_end/flambda/remove_unused_program_constructs.ml b/middle_end/flambda/remove_unused_program_constructs.ml
-index 468223d..7849d54 100644
+index 468223dcfa..7849d5489f 100644
 --- a/middle_end/flambda/remove_unused_program_constructs.ml
 +++ b/middle_end/flambda/remove_unused_program_constructs.ml
 @@ -103,7 +103,7 @@ let rec loop (program : Flambda.program_body)
@@ -1300,7 +1264,7 @@ index 468223d..7849d54 100644
  let remove_unused_program_constructs (program : Flambda.program) =
    { program with
 diff --git a/middle_end/flambda/share_constants.ml b/middle_end/flambda/share_constants.ml
-index 2bbd713..e45a11a 100644
+index 2bbd7134b8..e45a11a647 100644
 --- a/middle_end/flambda/share_constants.ml
 +++ b/middle_end/flambda/share_constants.ml
 @@ -54,10 +54,10 @@ let cannot_share (const : Flambda.constant_defining_value) =
@@ -1348,7 +1312,7 @@ index 2bbd713..e45a11a 100644
        | None ->
          loop program
 diff --git a/middle_end/symbol.ml b/middle_end/symbol.ml
-index 22a2e0a..09d8c08 100644
+index 22a2e0a70e..09d8c08b60 100644
 --- a/middle_end/symbol.ml
 +++ b/middle_end/symbol.ml
 @@ -87,7 +87,7 @@ let of_variable variable =
@@ -1361,7 +1325,7 @@ index 22a2e0a..09d8c08 100644
    | Linkage l -> Linkage { l with compilation_unit }
    | Variable v -> Variable { v with compilation_unit }
 diff --git a/middle_end/symbol.mli b/middle_end/symbol.mli
-index d2771af..382d230 100644
+index d2771af244..382d230005 100644
 --- a/middle_end/symbol.mli
 +++ b/middle_end/symbol.mli
 @@ -34,7 +34,7 @@ val of_variable : Variable.t -> t
@@ -1374,7 +1338,7 @@ index d2771af..382d230 100644
  val compilation_unit : t -> Compilation_unit.t
  val label : t -> Linkage_name.t
 diff --git a/otherlibs/Makefile.otherlibs.common b/otherlibs/Makefile.otherlibs.common
-index f08dd13..6bd739f 100644
+index f08dd13ef8..6bd739fbc4 100644
 --- a/otherlibs/Makefile.otherlibs.common
 +++ b/otherlibs/Makefile.otherlibs.common
 @@ -80,7 +80,8 @@ endif
@@ -1388,7 +1352,7 @@ index f08dd13..6bd739f 100644
  	$(V_OCAMLMKLIB)$(MKLIB) -o $(LIBNAME) -oc $(CLIBNAME_NATIVE) -ocamlopt '$(CAMLOPT)' \
                  -linkall $(CAMLOBJS_NAT) $(LINKOPTS)
 diff --git a/otherlibs/systhreads/Makefile b/otherlibs/systhreads/Makefile
-index 64d41cc..19a8265 100644
+index 64d41cc19d..19a8265030 100644
 --- a/otherlibs/systhreads/Makefile
 +++ b/otherlibs/systhreads/Makefile
 @@ -70,7 +70,7 @@ $(LIBNAME).cma: $(THREADS_BCOBJS)
@@ -1401,7 +1365,7 @@ index 64d41cc..19a8265 100644
  # The following lines produce two object files st_stubs.b.$(O) and
  # st_stubs.n.$(O) from the same source file st_stubs.c (it is compiled
 diff --git a/stdlib/Makefile b/stdlib/Makefile
-index a7f2e60..d161a48 100644
+index a7f2e60a7a..d161a483e7 100644
 --- a/stdlib/Makefile
 +++ b/stdlib/Makefile
 @@ -102,7 +102,7 @@ stdlib.cma: $(OBJS)
@@ -1415,11 +1379,11 @@ index a7f2e60..d161a48 100644
  distclean: clean
 diff --git a/testsuite/tests/pack-and-lto/Makefile b/testsuite/tests/pack-and-lto/Makefile
 new file mode 100644
-index 0000000..62670e9
+index 0000000000..9bcbae8a9a
 --- /dev/null
 +++ b/testsuite/tests/pack-and-lto/Makefile
-@@ -0,0 +1,30 @@
-+default: native warning
+@@ -0,0 +1,22 @@
++default: native
 +
 +native:
 +	printf " ... testing native 'test.reference':"
@@ -1432,14 +1396,6 @@ index 0000000..62670e9
 +	@$(DIFF) test.result test.reference >/dev/null \
 +	    && echo " => passed" || echo " => failed"
 +
-+warning:
-+	printf " ... testing warning with lto 'warning.reference':"
-+	@$(OCAMLOPT) -no-lto -c no_lto.ml
-+	@$(OCAMLOPT) -lto -c main_warning.ml 2> warning.result
-+	@$(DIFF) warning.result warning.reference >/dev/null \
-+	    && echo " => passed" || echo " => failed"
-+
-+
 +promote: defaultpromote
 +
 +clean: defaultclean
@@ -1449,25 +1405,9 @@ index 0000000..62670e9
 +BASEDIR=../..
 +include $(BASEDIR)/makefiles/Makefile.common
 +COMPFLAGS =
-diff --git a/testsuite/tests/pack-and-lto/main_warning.ml b/testsuite/tests/pack-and-lto/main_warning.ml
-new file mode 100644
-index 0000000..f26f42e
---- /dev/null
-+++ b/testsuite/tests/pack-and-lto/main_warning.ml
-@@ -0,0 +1,2 @@
-+
-+let () = No_lto.f ()
-diff --git a/testsuite/tests/pack-and-lto/no_lto.ml b/testsuite/tests/pack-and-lto/no_lto.ml
-new file mode 100644
-index 0000000..63824ef
---- /dev/null
-+++ b/testsuite/tests/pack-and-lto/no_lto.ml
-@@ -0,0 +1,2 @@
-+
-+let f () = () [@@inline never]
 diff --git a/testsuite/tests/pack-and-lto/package/a.ml b/testsuite/tests/pack-and-lto/package/a.ml
 new file mode 100644
-index 0000000..586c46e
+index 0000000000..586c46e896
 --- /dev/null
 +++ b/testsuite/tests/pack-and-lto/package/a.ml
 @@ -0,0 +1,2 @@
@@ -1475,7 +1415,7 @@ index 0000000..586c46e
 +let () = print_endline "A entry"
 diff --git a/testsuite/tests/pack-and-lto/package/b.ml b/testsuite/tests/pack-and-lto/package/b.ml
 new file mode 100644
-index 0000000..6a3f079
+index 0000000000..6a3f079402
 --- /dev/null
 +++ b/testsuite/tests/pack-and-lto/package/b.ml
 @@ -0,0 +1,2 @@
@@ -1483,7 +1423,7 @@ index 0000000..6a3f079
 +let () = print_endline "B entry"
 diff --git a/testsuite/tests/pack-and-lto/test.ml b/testsuite/tests/pack-and-lto/test.ml
 new file mode 100644
-index 0000000..69a857f
+index 0000000000..69a857fae8
 --- /dev/null
 +++ b/testsuite/tests/pack-and-lto/test.ml
 @@ -0,0 +1,3 @@
@@ -1492,7 +1432,7 @@ index 0000000..69a857f
 +let () = Pack.A.a ()
 diff --git a/testsuite/tests/pack-and-lto/test.reference b/testsuite/tests/pack-and-lto/test.reference
 new file mode 100644
-index 0000000..eee942d
+index 0000000000..eee942d4bf
 --- /dev/null
 +++ b/testsuite/tests/pack-and-lto/test.reference
 @@ -0,0 +1,5 @@
@@ -1501,18 +1441,8 @@ index 0000000..eee942d
 +Test entry
 +ok b
 +ok a
-diff --git a/testsuite/tests/pack-and-lto/warning.reference b/testsuite/tests/pack-and-lto/warning.reference
-new file mode 100644
-index 0000000..7d97f45
---- /dev/null
-+++ b/testsuite/tests/pack-and-lto/warning.reference
-@@ -0,0 +1,4 @@
-+File "_none_", line 1:
-+Warning 76 [module-without-lto]: The required module No_lto
-+  was built without -lto.
-+  Linking it in -use-lto mode will probably not be possible.
 diff --git a/tools/objinfo.ml b/tools/objinfo.ml
-index 83e3659..39a8ff0 100644
+index 83e3659314..39a8ff0962 100644
 --- a/tools/objinfo.ml
 +++ b/tools/objinfo.ml
 @@ -242,7 +242,13 @@ let print_cmx_infos (ui, crc) =
@@ -1531,33 +1461,31 @@ index 83e3659..39a8ff0 100644
    let pr_funs _ fns =
      List.iter (fun arity -> printf " %d" arity) fns in
 diff --git a/utils/clflags.ml b/utils/clflags.ml
-index bf79b30..5c89478 100644
+index bf79b30b7e..d3bdb88998 100644
 --- a/utils/clflags.ml
 +++ b/utils/clflags.ml
-@@ -188,6 +188,8 @@ let inlining_report = ref false    (* -inlining-report *)
+@@ -188,6 +188,7 @@ let inlining_report = ref false    (* -inlining-report *)
  
  let afl_instrument = ref Config.afl_instrument (* -afl-instrument *)
  let afl_inst_ratio = ref 100           (* -afl-inst-ratio *)
-+let lto = ref Config.cmx_contains_all_code (* -lto / -no-lto *)
 +let whole_program_rebuild = ref false  (* -use-lto *)
  
  let function_sections = ref false      (* -function-sections *)
  
 diff --git a/utils/clflags.mli b/utils/clflags.mli
-index 3e54d98..bf110a5 100644
+index 3e54d98ad5..6775334244 100644
 --- a/utils/clflags.mli
 +++ b/utils/clflags.mli
-@@ -219,6 +219,8 @@ val classic_inlining : bool ref
+@@ -219,6 +219,7 @@ val classic_inlining : bool ref
  val afl_instrument : bool ref
  val afl_inst_ratio : int ref
  val function_sections : bool ref
-+val lto : bool ref
 +val whole_program_rebuild : bool ref
  
  val all_passes : string list ref
  val dumped_pass : string -> bool
 diff --git a/utils/config.common.ml.in b/utils/config.common.ml.in
-index 0f956d2..0b5f719 100644
+index 0f956d2fbc..0b5f71992c 100644
 --- a/utils/config.common.ml.in
 +++ b/utils/config.common.ml.in
 @@ -121,6 +121,7 @@ let configuration_variables () =
@@ -1569,7 +1497,7 @@ index 0f956d2..0b5f719 100644
    p_bool "windows_unicode" windows_unicode;
    p_bool "supports_shared_libraries" supports_shared_libraries;
 diff --git a/utils/config.fixed.ml b/utils/config.fixed.ml
-index a334b1d..5f19eb1 100644
+index a334b1d76f..5f19eb17d7 100644
 --- a/utils/config.fixed.ml
 +++ b/utils/config.fixed.ml
 @@ -57,6 +57,7 @@ let align_double = true
@@ -1581,7 +1509,7 @@ index a334b1d..5f19eb1 100644
  let tsan = false
  let architecture = "none"
 diff --git a/utils/config.generated.ml.in b/utils/config.generated.ml.in
-index e5e1b15..17158f3 100644
+index e5e1b15d31..17158f3509 100644
 --- a/utils/config.generated.ml.in
 +++ b/utils/config.generated.ml.in
 @@ -69,6 +69,7 @@ let align_int64 = @align_int64@
@@ -1593,7 +1521,7 @@ index e5e1b15..17158f3 100644
  let native_compiler = @native_compiler@
  
 diff --git a/utils/config.mli b/utils/config.mli
-index 3e61d6e..e8c999b 100644
+index 3e61d6e66b..e8c999b160 100644
 --- a/utils/config.mli
 +++ b/utils/config.mli
 @@ -280,6 +280,9 @@ val native_dynlink: bool
@@ -1607,7 +1535,7 @@ index 3e61d6e..e8c999b 100644
  (** Whether ar supports @FILE arguments. *)
  
 diff --git a/utils/warnings.ml b/utils/warnings.ml
-index fa58cb3..4d857c6 100644
+index fa58cb3fc0..4d857c669d 100644
 --- a/utils/warnings.ml
 +++ b/utils/warnings.ml
 @@ -115,6 +115,7 @@ type t =
@@ -1659,7 +1587,7 @@ index fa58cb3..4d857c6 100644
  
  let nerrors = ref 0
 diff --git a/utils/warnings.mli b/utils/warnings.mli
-index 5a19781..3b14da1 100644
+index 5a19781703..3b14da1a96 100644
 --- a/utils/warnings.mli
 +++ b/utils/warnings.mli
 @@ -122,6 +122,7 @@ type t =
