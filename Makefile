@@ -300,6 +300,8 @@ ocaml/Makefile.config: $(TOOLCHAIN) | ocaml
 		--with-relative-libdir \
 		--enable-runtime-search \
 		--enable-runtime-search-target \
+		--enable-flambda \
+		$$(case "$$(ocamlc -vnum 2>/dev/null)" in 5.3.*) ;; *) echo --enable-lto ;; esac) \
 		$(OCAMLCONFIGUREEXTRA)
 
 $(OCAMLBUILT): ocaml/Makefile.config | _build
