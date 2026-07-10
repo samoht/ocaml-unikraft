@@ -302,6 +302,7 @@ ocaml/Makefile.config: $(TOOLCHAIN) | ocaml
 		--enable-runtime-search-target \
 		--enable-flambda \
 		$$(ocamlc -vnum 2>/dev/null | grep -q '^5\.3\.' || echo --enable-lto) \
+		--disable-cfi \
 		$(OCAMLCONFIGUREEXTRA)
 
 $(OCAMLBUILT): ocaml/Makefile.config | _build
