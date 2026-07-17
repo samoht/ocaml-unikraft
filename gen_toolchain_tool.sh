@@ -78,6 +78,20 @@ for arg do
     -o)
       flag=o
       ;;
+    -pthread)
+      # This bare-metal aarch64-elf/x86_64-elf gcc has no -pthread driver flag
+      # (recent gcc rejects it outright), and Unikraft's musl keeps pthread in
+      # libc rather than a standalone libpthread. Translate the hosted-gcc
+      # convention that OCaml's configure probes for: -pthread becomes the flag
+      # musl needs (_REENTRANT), and -lpthread is dropped (see below).
+      flag=
+      set -- "\$@" -D_REENTRANT
+      continue
+      ;;
+    -lpthread)
+      flag=
+      continue
+      ;;
     *)
       if [ "\$flag" = o ]; then TARGET="\$arg"; fi
       flag=
