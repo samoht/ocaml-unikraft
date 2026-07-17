@@ -92,6 +92,15 @@ for arg do
       flag=
       continue
       ;;
+    -lstdc++|-lc++)
+      # This freestanding musl target has no C++ runtime library. Dune links
+      # -lstdc++ for any C++ foreign stub, but a unikernel's C++ objects must be
+      # built runtime-free (no exceptions, RTTI, or STL) since none is present;
+      # drop the flag rather than fail on the missing archive. C++ code that
+      # does need a runtime still fails loudly, on its undefined symbols.
+      flag=
+      continue
+      ;;
     *)
       if [ "\$flag" = o ]; then TARGET="\$arg"; fi
       flag=
