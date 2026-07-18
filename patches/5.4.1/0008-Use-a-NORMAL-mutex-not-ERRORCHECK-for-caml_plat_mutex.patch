@@ -1,0 +1,32 @@
+From 54d5a0b7e91195e6e93dda3f7d639ae049c4a902 Mon Sep 17 00:00:00 2001
+From: Thomas Gazagnaire <thomas@gazagnaire.org>
+Date: Fri, 17 Jul 2026 17:09:16 -0700
+Subject: [PATCH] Use a NORMAL mutex, not ERRORCHECK, for caml_plat_mutex
+
+An ERRORCHECK mutex's lock/trylock reads pthread_self() to record and check
+the owning thread. On a bare secondary lcpu brought up outside the uk-thread
+scheduler (mirage-eio's SMP workers), there is no current pthread, so
+pthread_self() returns a null/invalid handle and __pthread_mutex_trylock_owner
+dereferences it -- domain_create's d->domain_lock trylock faults. A NORMAL mutex
+does no owner bookkeeping, so it works on such a core; OCaml never relies on the
+error-checking behaviour.
+---
+ runtime/platform.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/runtime/platform.c b/runtime/platform.c
+index 0c780af..f961647 100644
+--- a/runtime/platform.c
++++ b/runtime/platform.c
+@@ -54,7 +54,7 @@ CAMLexport void caml_plat_mutex_init(caml_plat_mutex * m)
+   pthread_mutexattr_t attr;
+   rc = pthread_mutexattr_init(&attr);
+   if (rc != 0) goto error1;
+-  rc = pthread_mutexattr_settype(&attr, PTHREAD_MUTEX_ERRORCHECK);
++  rc = pthread_mutexattr_settype(&attr, PTHREAD_MUTEX_NORMAL);
+   if (rc != 0) goto error2;
+   rc = pthread_mutex_init(m, &attr);
+   // fall through
+-- 
+2.55.0
+
