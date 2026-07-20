@@ -1,6 +1,6 @@
-From 18fdfa4847a231f6e165d2cb51a78896e09be397 Mon Sep 17 00:00:00 2001
-From: t <t@t>
-Date: Fri, 17 Jul 2026 23:01:22 -0700
+From 7bc84c4673c532a6aa2a9ff15b9043a869a69e3c Mon Sep 17 00:00:00 2001
+From: Thomas Gazagnaire <thomas@gazagnaire.org>
+Date: Mon, 20 Jul 2026 10:52:14 -0700
 Subject: [PATCH] flambda_to_clambda: allocate fresh static-fail labels for
  -use-lto
 

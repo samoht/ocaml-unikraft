@@ -1,6 +1,6 @@
-From d7f5e38b5d0172eb43671d281b0250f29c7e2e3a Mon Sep 17 00:00:00 2001
-From: t <t@t>
-Date: Sun, 19 Jul 2026 08:25:32 -0700
+From ddc17db19e73a5112822095826bd2051853357f3 Mon Sep 17 00:00:00 2001
+From: Thomas Gazagnaire <thomas@gazagnaire.org>
+Date: Mon, 20 Jul 2026 10:52:15 -0700
 Subject: [PATCH] asmlink: automatic specialisation of constant-format printf
  under -use-lto
 

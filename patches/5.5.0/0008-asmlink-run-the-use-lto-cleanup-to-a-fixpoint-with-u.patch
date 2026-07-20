@@ -1,6 +1,6 @@
-From ee8cd25128a48bcaa72079fb4689d17138ac928a Mon Sep 17 00:00:00 2001
-From: t <t@t>
-Date: Sat, 18 Jul 2026 14:08:03 -0700
+From dda6219a4e718956872447dd50c1346ac0794eaf Mon Sep 17 00:00:00 2001
+From: Thomas Gazagnaire <thomas@gazagnaire.org>
+Date: Mon, 20 Jul 2026 10:52:14 -0700
 Subject: [PATCH] asmlink: run the -use-lto cleanup to a fixpoint, with
  unused-closure-vars
 

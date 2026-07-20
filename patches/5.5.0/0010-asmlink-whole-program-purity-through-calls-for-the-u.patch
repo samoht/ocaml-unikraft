@@ -1,6 +1,6 @@
-From 61883e412a932916b6233b2344f123e92f002bce Mon Sep 17 00:00:00 2001
-From: t <t@t>
-Date: Sat, 18 Jul 2026 21:33:07 -0700
+From 15f51b54c186b42444ee2d3c1bbe645447a5a0ce Mon Sep 17 00:00:00 2001
+From: Thomas Gazagnaire <thomas@gazagnaire.org>
+Date: Mon, 20 Jul 2026 10:52:14 -0700
 Subject: [PATCH] asmlink: whole-program purity through calls for the -use-lto
  cleanup
 
@@ -44,7 +44,7 @@ reverted and this pass in place, lto_dup_labels still dies with
  asmcomp/asmlink.ml                            | 167 ++++++++++++++++++
  .../tests/lto-dce/lto_dce.compilers.reference |   4 +
  .../tests/lto-static-exn/lto_dup_labels.ml    |  19 +-
- 1 file changed, 176 insertions(+), 1 deletion(-)
+ 4 files changed, 200 insertions(+), 4 deletions(-)
 
 diff --git a/asmcomp/asmlink.ml b/asmcomp/asmlink.ml
 index ae222e7e0c..5d6ea40a4c 100644

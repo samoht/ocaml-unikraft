@@ -1,6 +1,6 @@
-From c4cf332b7c278e231c0a7c835c38b6654e77df92 Mon Sep 17 00:00:00 2001
-From: t <t@t>
-Date: Sat, 18 Jul 2026 21:46:08 -0700
+From 28b0ce9d4ab9bc33d6d3b15fbe5ef47a1a27e8a3 Mon Sep 17 00:00:00 2001
+From: Thomas Gazagnaire <thomas@gazagnaire.org>
+Date: Mon, 20 Jul 2026 10:51:37 -0700
 Subject: [PATCH] asmlink: link-time evaluation of module initializers under
  -use-lto
 
@@ -37,7 +37,7 @@ unevaluable for the interpreter.
  .../tests/lto-dce/lto_dce.compilers.reference |   8 +-
  .../lto_dup_labels.compilers.reference        |   2 +-
  .../tests/lto-static-exn/lto_dup_labels.ml    |  15 +-
- 1 file changed
+ 7 files changed, 329 insertions(+), 26 deletions(-)
 
 diff --git a/asmcomp/asmlink.ml b/asmcomp/asmlink.ml
 index ab7edf5f8e..c8f0bd82c7 100644

@@ -1,6 +1,6 @@
-From dbbc755ad1820f13fec8af764b1ed0c618f364f6 Mon Sep 17 00:00:00 2001
-From: t <t@t>
-Date: Fri, 17 Jul 2026 23:17:06 -0700
+From da9b8a41c0bda8fe7e805a887458ba2cb646ecf9 Mon Sep 17 00:00:00 2001
+From: Thomas Gazagnaire <thomas@gazagnaire.org>
+Date: Mon, 20 Jul 2026 10:51:36 -0700
 Subject: [PATCH] asmlink: report -use-lto dead-code elimination stats
 
 After the whole-program cleanup, print how many function declarations were
