@@ -1,0 +1,75 @@
+From 7769f5e03cf6ae171f369bbb87aa8493028f7e14 Mon Sep 17 00:00:00 2001
+From: Thomas Gazagnaire <thomas@gazagnaire.org>
+Date: Mon, 20 Jul 2026 11:38:30 -0700
+Subject: [PATCH] flambda: keep -opaque units code-free so their cmx digests
+ stay portable
+
+-opaque promises that a unit's cmx digest depends only on what dependents
+may assume, so recompiling the same source elsewhere yields an identical
+digest and the implementations stay swappable at link time; the compiler's
+own build relies on this for ocamltest's Unix stub, and
+testsuite/tests/opaque checks it.  Storing the whole-program code in the
+opaque export info broke the contract: the code embeds source paths
+through its debug info, so byte-identical sources in fst/ and snd/
+digested differently and the swap died with inconsistent assumptions.
+
+Store no code for -opaque units.  Such a unit cannot take part in a
+-use-lto link, which the link already reports precisely
+(Module_compiled_without_lto); the advance warning 76 at compile time now
+fires only when the compilation is itself run with -use-lto, since a
+code-less dependency is fully legitimate otherwise and, emitted
+unconditionally, the warning broke warn-error builds of ocamltest.
+---
+ middle_end/compilenv.ml                 |  7 ++++++-
+ middle_end/flambda/build_export_info.ml | 17 ++++++++++-------
+ 2 files changed, 16 insertions(+), 8 deletions(-)
+
+diff --git a/middle_end/compilenv.ml b/middle_end/compilenv.ml
+index bcc2460278..d85418b739 100644
+--- a/middle_end/compilenv.ml
++++ b/middle_end/compilenv.ml
+@@ -379,7 +379,12 @@ let check_required_modules_are_compiled_with_lto () =
+ (* Write the description of the current unit *)
+ 
+ let write_unit_info info filename =
+-  if Config.flambda && Config.cmx_contains_all_code then
++  (* Only worth reporting when this compilation is itself heading for a
++     -use-lto link: a code-less dependency (an -opaque module) is fully
++     legitimate otherwise, and the whole-program link has its own error for
++     the case that matters. *)
++  if Config.flambda && Config.cmx_contains_all_code
++     && !Clflags.whole_program_rebuild then
+     check_required_modules_are_compiled_with_lto ();
+   let oc = open_out_bin filename in
+   output_string oc cmx_magic_number;
+diff --git a/middle_end/flambda/build_export_info.ml b/middle_end/flambda/build_export_info.ml
+index 48b51f500e..dc9d787d49 100644
+--- a/middle_end/flambda/build_export_info.ml
++++ b/middle_end/flambda/build_export_info.ml
+@@ -524,13 +524,16 @@ let build_transient ~(backend : (module Backend_intf.S))
+   if !Clflags.opaque then
+     let compilation_unit = Compilenv.current_unit () in
+     let root_symbol = Compilenv.current_unit_symbol () in
+-    let code =
+-      if Config.cmx_contains_all_code then
+-        Some program
+-      else
+-        None
+-    in
+-    Export_info.opaque_transient ~root_symbol ~compilation_unit ~code
++    (* No code is stored for an -opaque unit, even when the compiler is
++       configured to store it.  -opaque promises that the cmx digest depends
++       only on what dependents may assume, so recompiling the same source in
++       another directory must produce an identical digest and remain
++       swappable at link time (testsuite/tests/opaque); stored code embeds
++       source paths through its debug info and breaks that.  Such a unit
++       consequently cannot take part in a -use-lto link, which the link
++       reports (Module_compiled_without_lto), and dependents warn at compile
++       time (warning 76). *)
++    Export_info.opaque_transient ~root_symbol ~compilation_unit ~code:None
+   else
+     (* CR-soon pchambart: Should probably use that instead of the ident of
+        the module as global identifier.
+-- 
+2.55.0
+
