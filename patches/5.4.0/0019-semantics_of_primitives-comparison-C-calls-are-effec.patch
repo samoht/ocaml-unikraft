@@ -1,0 +1,58 @@
+From 53ea78e5047aacb4f70edca782db8b13b8973406 Mon Sep 17 00:00:00 2001
+From: Thomas Gazagnaire <thomas@gazagnaire.org>
+Date: Mon, 20 Jul 2026 12:10:14 -0700
+Subject: [PATCH] semantics_of_primitives: comparison C calls are effect-free
+
+caml_string_equal and the rest of the string, bytes and boxed-number
+comparison family neither mutate state nor raise; classifying them as
+arbitrary effects kept entire runtime-dispatch initializers alive under
+-use-lto (a record of closures selected by comparing a runtime string
+retains every alternative).  Strings and boxed numbers are immutable, so
+their comparisons also have no coeffects; bytes comparisons read mutable
+data and keep Has_coeffects, which allows deletion but not reordering.
+
+On a two-way dispatch selected by caml_string_equal with the result
+unread, the whole-program cleanup now eliminates both alternatives
+(previously both were retained).  Filename's Sys.os_type dispatch is
+still retained in real images: its submodule initializers call
+Sys.getenv, whose possible Not_found raise the effects model cannot
+express; a raise-aware effects lattice is the next lever there.
+---
+ middle_end/semantics_of_primitives.ml | 21 +++++++++++++++++++++
+ 1 file changed, 21 insertions(+)
+
+diff --git a/middle_end/semantics_of_primitives.ml b/middle_end/semantics_of_primitives.ml
+index 9fedf6a2ad..b10e7d9c88 100644
+--- a/middle_end/semantics_of_primitives.ml
++++ b/middle_end/semantics_of_primitives.ml
+@@ -35,6 +35,27 @@ let for_primitive (prim : Clambda_primitives.primitive) =
+                | "caml_int64_float_of_bits" | "caml_int32_float_of_bits"
+                | "caml_sys_get_config" | "caml_sys_get_argv" ) } ->
+       No_effects, No_coeffects
++  | Pccall { prim_name =
++               ( "caml_string_equal" | "caml_string_notequal"
++               | "caml_string_compare"
++               | "caml_string_lessthan" | "caml_string_lessequal"
++               | "caml_string_greaterthan" | "caml_string_greaterequal"
++               | "caml_int_compare" | "caml_int32_compare"
++               | "caml_int64_compare" | "caml_nativeint_compare"
++               | "caml_float_compare" ) } ->
++      (* Pure comparisons: no observable effect and, on immutable data, no
++         coeffects.  Classifying them as arbitrary effects kept entire
++         runtime-dispatch initializers alive (e.g. Filename's Sys.os_type
++         match retaining both OS implementations under -use-lto). *)
++      No_effects, No_coeffects
++  | Pccall { prim_name =
++               ( "caml_bytes_equal" | "caml_bytes_notequal"
++               | "caml_bytes_compare"
++               | "caml_bytes_lessthan" | "caml_bytes_lessequal"
++               | "caml_bytes_greaterthan" | "caml_bytes_greaterequal" ) } ->
++      (* As above, but bytes are mutable: reading them is a coeffect, so
++         these must not be reordered, though an unused one may be deleted. *)
++      No_effects, Has_coeffects
+   | Pccall { prim_name =
+                ( "caml_fresh_oo_id"
+                | "caml_create_bytes" | "caml_create_string" ) } ->
+-- 
+2.55.0
+
