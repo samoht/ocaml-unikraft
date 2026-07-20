@@ -48,6 +48,7 @@ UKLIBDIR="\$basedir/lib/unikraft"
 # - the target file (for post-processing steps)
 
 compiling=
+cxx=
 backend=
 flag=
 TARGET=a.out
@@ -101,6 +102,13 @@ for arg do
       flag=
       continue
       ;;
+    *.cc|*.cpp|*.cxx|*.c++|*.C|-std=*++*|--std=*++*|-xc++|-x=c++)
+      # A C++ compile: a C++ source, a C++ standard, or an explicit -x c++. The
+      # backend cflags below are the C dialect's (-std=gnu11, -Wno-int-conversion
+      # and friends), which gcc rejects for C++ with a warning per flag; the
+      # flags are dropped for C++ further down. Keep the argument itself.
+      cxx=1
+      ;;
     *)
       if [ "\$flag" = o ]; then TARGET="\$arg"; fi
       flag=
@@ -130,6 +138,25 @@ EOF
       printf '    if [ -z "$compiling" ]; then\n    set -- \\\n'
       cat "$b"/ldflags
       printf '      ;\n    fi\n'
+
+      # Drop the C-dialect flags for a C++ compile. The backend cflags above are
+      # the C dialect's; gcc warns once per flag when they reach a C++ front end
+      # ("valid for C/ObjC but not for C++"), a wall of noise on every build that
+      # compiles a C++ stub. They are already inert for C++ -- the compile's own
+      # -std=c++NN, appended after them, wins -- so filtering them changes
+      # nothing but the noise. Rebuild the argument list rather than editing it
+      # in place, so an argument that contains spaces (a path) survives. A C
+      # compile never sets cxx, so its argument list is untouched.
+      printf '    if [ -n "$cxx" ]; then\n'
+      printf '      __ukn=$#\n'
+      printf '      while [ "$__ukn" -gt 0 ]; do\n'
+      printf '        __ukn=$((__ukn-1)); __uka="$1"; shift\n'
+      printf '        case "$__uka" in\n'
+      printf '          -Wno-int-conversion|-Wno-incompatible-pointer-types|-Wno-strict-prototypes|-std=gnu11|--std=gnu11|-std=c11|--std=c11) ;;\n'
+      printf '          *) set -- "$@" "$__uka" ;;\n'
+      printf '        esac\n'
+      printf '      done\n'
+      printf '    fi\n'
 
       # Call to the compiler and post-processing
       # Post-processing is performed only if the `-z` option is given explicitly
