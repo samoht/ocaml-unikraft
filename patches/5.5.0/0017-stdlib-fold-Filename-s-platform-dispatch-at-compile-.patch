@@ -1,0 +1,84 @@
+From 39f93fbf333453d288de13ac2d3950a21ef7d78e Mon Sep 17 00:00:00 2001
+From: Thomas Gazagnaire <thomas@gazagnaire.org>
+Date: Mon, 20 Jul 2026 12:21:21 -0700
+Subject: [PATCH] stdlib: fold Filename's platform dispatch at compile time
+
+Filename selected its platform implementation by matching the runtime
+Sys.os_type string over three eagerly built first-class modules, so every
+program carried all three implementations and their initializers; the
+Unix and Win32 temp_dir_name fields read the environment eagerly, rooting
+each whole module as a startup effect even under whole-program
+elimination (a solo5 unikernel retained both quote_command variants,
+about 11k of text, for an operation it cannot perform).
+
+Dispatch instead on the compile-time %ostype_* constants, which folds the
+selection during compilation and eliminates the two dead platform
+implementations, and make temp_dir_name a function inside SYSDEPS,
+applied once after the include: the public value API is unchanged and the
+one legitimate eager getenv roots only itself, so the unread pure fields
+of the selected module are eliminated too.  Verified with
+-dlto-why-live=quote_command on a basename-using program: no matching
+symbol remains.
+---
+ stdlib/filename.ml | 20 +++++++++++++-------
+ 1 file changed, 13 insertions(+), 7 deletions(-)
+
+diff --git a/stdlib/filename.ml b/stdlib/filename.ml
+index 5bb94564e6..164d6f952d 100644
+--- a/stdlib/filename.ml
++++ b/stdlib/filename.ml
+@@ -78,7 +78,7 @@ module type SYSDEPS = sig
+   val is_relative : string -> bool
+   val is_implicit : string -> bool
+   val check_suffix : string -> string -> bool
+-  val temp_dir_name : string
++  val temp_dir_name : unit -> string
+   val quote : string -> string
+   val quote_command :
+     string -> ?stdin: string -> ?stdout: string -> ?stderr: string
+@@ -101,7 +101,7 @@ module Unix : SYSDEPS = struct
+   let check_suffix name suff =
+     String.ends_with ~suffix:suff name
+ 
+-  let temp_dir_name =
++  let temp_dir_name () =
+     try Sys.getenv "TMPDIR" with Not_found -> "/tmp"
+   let quote = generic_quote "'\\''"
+   let quote_command cmd ?stdin ?stdout ?stderr args =
+@@ -140,7 +140,6 @@ module Win32 : SYSDEPS = struct
+       false
+ 
+   external temp_dir_name: unit -> string = "caml_sys_temp_dir_name"
+-  let temp_dir_name = temp_dir_name ()
+ 
+   let quote s =
+     let l = String.length s in
+@@ -265,14 +264,21 @@ module Cygwin : SYSDEPS = struct
+   let dirname = generic_dirname is_dir_sep current_dir_name
+ end
+ 
++(* Dispatch on the compile-time [%ostype_*] constants rather than the
++   runtime [Sys.os_type] string: the selection folds during compilation,
++   so the two dead platform implementations are eliminated instead of
++   being retained by the runtime choice.  [temp_dir_name] is a function in
++   [SYSDEPS] and applied once here, so the one legitimate eager [getenv]
++   roots only itself rather than the entire selected module. *)
+ module Sysdeps =
+-  (val (match Sys.os_type with
+-       | "Win32" -> (module Win32: SYSDEPS)
+-       | "Cygwin" -> (module Cygwin: SYSDEPS)
+-       | _ -> (module Unix: SYSDEPS)))
++  (val (if Sys.win32 then (module Win32: SYSDEPS)
++        else if Sys.cygwin then (module Cygwin: SYSDEPS)
++        else (module Unix: SYSDEPS)))
+ 
+ include Sysdeps
+ 
++let temp_dir_name = temp_dir_name ()
++
+ let concat dirname filename =
+   let l = String.length dirname in
+   if l = 0 || is_dir_sep dirname (l-1)
+-- 
+2.55.0
+
