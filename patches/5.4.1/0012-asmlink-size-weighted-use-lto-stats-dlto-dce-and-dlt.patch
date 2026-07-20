@@ -1,0 +1,389 @@
+From c3bc9b05150edf50d3447c1bc6912d06e691deb7 Mon Sep 17 00:00:00 2001
+From: t <t@t>
+Date: Sat, 18 Jul 2026 14:07:09 -0700
+Subject: [PATCH] asmlink: size-weighted -use-lto stats, -dlto-dce and
+ -dlto-why-live reports
+
+The one-line -use-lto summary now also states how much of the program's code
+size was eliminated, sizes being the inlining cost model's, an architecture-
+independent proxy for generated-code bytes.  Function identity across the
+cleanup is the closure origin, which the passes preserve even as variables
+are freshened, so eliminated functions can be recognised and named.
+
+Two dump flags expose the detail:
+
+- -dlto-dce prints a per-originating-unit table of dropped size and
+  kept/total function counts, followed by every eliminated function with its
+  size, largest first, in the style of linker section-GC reports
+  (ld --print-gc-sections, bloaty).
+
+- -dlto-why-live=<substring> explains retention rather than elimination, in
+  the style of mold's --why-live: for each symbol of the cleaned program
+  whose linkage name contains <substring>, it prints the chain of retainers
+  back to a root (the program result or a surviving top-level effect),
+  computed by rerunning the cleanup's reachability walk while recording the
+  first retainer of every symbol.  Breadth-first order keeps the chains
+  shortest.
+---
+ asmcomp/asmlink.ml   | 230 +++++++++++++++++++++++++++++++++++++++----
+ driver/main_args.ml  |  17 ++++
+ driver/main_args.mli |   2 +
+ utils/clflags.ml     |   2 +
+ utils/clflags.mli    |   2 +
+ 5 files changed, 235 insertions(+), 18 deletions(-)
+
+diff --git a/asmcomp/asmlink.ml b/asmcomp/asmlink.ml
+index 055edb64c3..0358a69d1a 100644
+--- a/asmcomp/asmlink.ml
++++ b/asmcomp/asmlink.ml
+@@ -352,15 +352,213 @@ let compile_implementation_flambda ~unit_prefix ~backend
+     in
+     Asmgen.end_gen_implementation ~ppf_dump clambda_with_constants)
+ 
+-(* Total function declarations in a whole-program Flambda term, counting nested
+-   closures as well as top-level ones, so the figure is comparable before and
+-   after [Lift_constants] hoists closures to the top level. *)
+-let count_functions program =
+-  let n = ref 0 in
++(* Dead-code-elimination statistics for the -use-lto report.  Functions are
++   counted with [Flambda_iterators] over nested and top-level closures alike,
++   so the figures are stable across the [Lift_constants] pass.  Sizes use the
++   inlining cost model, an architecture-independent proxy for generated-code
++   bytes.  Functions are keyed by closure origin, which the cleaning passes
++   preserve even as variables are freshened, so a function present before and
++   after cleaning is recognised as kept and an eliminated one can be named. *)
++type lto_stats = {
++  fun_count : int;
++  total_size : int;
++  by_origin : (int * int) Closure_origin.Map.t;
++  (* per origin: number of function declarations and their cumulative size *)
++}
++
++let program_stats program =
++  let fun_count = ref 0 in
++  let total_size = ref 0 in
++  let by_origin = ref Closure_origin.Map.empty in
+   Flambda_iterators.iter_on_set_of_closures_of_program program
+     ~f:(fun ~constant:_ (set : Flambda.set_of_closures) ->
+-      n := !n + Variable.Map.cardinal set.function_decls.funs);
+-  !n
++      Variable.Map.iter
++        (fun _fun_var (decl : Flambda.function_declaration) ->
++          let size =
++            match Inlining_cost.lambda_smaller' decl.body ~than:max_int with
++            | Some size -> size
++            | None -> 0
++          in
++          incr fun_count;
++          total_size := !total_size + size;
++          by_origin :=
++            Closure_origin.Map.update decl.closure_origin
++              (function
++                | None -> Some (1, size)
++                | Some (n, s) -> Some (n + 1, s + size))
++              !by_origin)
++        set.function_decls.funs);
++  { fun_count = !fun_count; total_size = !total_size; by_origin = !by_origin }
++
++let unit_of_origin origin =
++  Ident.name
++    (Compilation_unit.get_persistent_ident
++       (Closure_origin.get_compilation_unit origin))
++
++let report_dce ~ppf_dump ~(before : lto_stats) ~(after : lto_stats) =
++  let removed = before.fun_count - after.fun_count in
++  let removed_size = before.total_size - after.total_size in
++  let pct part whole =
++    if whole = 0 then 0.
++    else 100. *. float_of_int part /. float_of_int whole
++  in
++  Printf.eprintf
++    "-use-lto: kept %d of %d functions, eliminated %d as dead code \
++     (%.1f%% of functions, %.1f%% of code size)\n%!"
++    after.fun_count before.fun_count removed
++    (pct removed before.fun_count) (pct removed_size before.total_size);
++  if !Clflags.dump_lto_dce then begin
++    let kept origin = Closure_origin.Map.find_opt origin after.by_origin in
++    (* Aggregate per originating compilation unit. *)
++    let units = Hashtbl.create 42 in
++    Closure_origin.Map.iter
++      (fun origin (n, size) ->
++        let u = unit_of_origin origin in
++        let kn, ks = match kept origin with
++          | None -> 0, 0
++          | Some (kn, ks) -> kn, ks
++        in
++        let dn, ds, dkn, dks =
++          try Hashtbl.find units u with Not_found -> 0, 0, 0, 0
++        in
++        Hashtbl.replace units u (dn + n, ds + size, dkn + kn, dks + ks))
++      before.by_origin;
++    let units =
++      List.sort (fun (_, (_, s1, _, k1)) (_, (_, s2, _, k2)) ->
++          Int.compare (s2 - k2) (s1 - k1))
++        (Hashtbl.fold (fun u x acc -> (u, x) :: acc) units [])
++    in
++    Format.fprintf ppf_dump
++      "@.-use-lto dead-code elimination by unit \
++       (sizes in inlining-cost units):@.";
++    Format.fprintf ppf_dump "  %10s %12s  %s@." "dropped" "kept" "unit";
++    List.iter
++      (fun (u, (n, s, kn, ks)) ->
++        Format.fprintf ppf_dump "  %10d %12s  %s@." (s - ks)
++          (Printf.sprintf "%d/%d" kn n) u)
++      units;
++    let dropped =
++      Closure_origin.Map.fold
++        (fun origin (_, size) acc ->
++          match kept origin with
++          | Some _ -> acc
++          | None -> (size, origin) :: acc)
++        before.by_origin []
++    in
++    let dropped =
++      List.sort (fun (s1, _) (s2, _) -> Int.compare s2 s1) dropped
++    in
++    Format.fprintf ppf_dump
++      "@.-use-lto eliminated functions (size, closure origin):@.";
++    List.iter
++      (fun (size, origin) ->
++        Format.fprintf ppf_dump "  %10d  %a@." size
++          Closure_origin.print origin)
++      dropped;
++    Format.fprintf ppf_dump "@."
++  end
++
++(* Retention tracing for -dlto-why-live: rerun the reachability walk the
++   cleanup performs, this time remembering for every symbol which construct
++   first reached it, and print the chain of retainers for each symbol whose
++   linkage name contains the requested substring.  Runs on the cleaned
++   program, where every defined symbol is live, so the same roots (the
++   program result and the surviving top-level effects) reach them all. *)
++let why_live ~ppf_dump ~pattern (program : Flambda.program) =
++  let constant_deps (const : Flambda.constant_defining_value) =
++    match const with
++    | Allocated_const _ -> Symbol.Set.empty
++    | Block (_, fields) ->
++      Symbol.Set.of_list
++        (List.filter_map
++           (function
++             | (Symbol s : Flambda.constant_defining_value_block_field) ->
++               Some s
++             | Flambda.Const _ -> None)
++           fields)
++    | Set_of_closures set ->
++      Flambda.free_symbols_named (Set_of_closures set)
++    | Project_closure (s, _) -> Symbol.Set.singleton s
++  in
++  let defs = ref Symbol.Map.empty in
++  let add_def sym deps = defs := Symbol.Map.add sym deps !defs in
++  let roots = ref Symbol.Set.empty in
++  let rec walk (body : Flambda.program_body) =
++    match body with
++    | Let_symbol (s, def, k) -> add_def s (constant_deps def); walk k
++    | Let_rec_symbol (l, k) ->
++      List.iter (fun (s, def) -> add_def s (constant_deps def)) l;
++      walk k
++    | Initialize_symbol (s, _, fields, k) ->
++      add_def s
++        (List.fold_left
++           (fun acc field -> Symbol.Set.union acc (Flambda.free_symbols field))
++           Symbol.Set.empty fields);
++      walk k
++    | Effect (e, k) ->
++      roots := Symbol.Set.union (Flambda.free_symbols e) !roots;
++      walk k
++    | End syms -> roots := Symbol.Set.union syms !roots
++  in
++  walk program.program_body;
++  (* Breadth-first from the roots, recording the first retainer of each
++     symbol; first visits give shortest retention chains. *)
++  let parent = Symbol.Tbl.create 42 in
++  let queue = Queue.create () in
++  Symbol.Set.iter
++    (fun s ->
++      if not (Symbol.Tbl.mem parent s) then begin
++        Symbol.Tbl.add parent s None;
++        Queue.add s queue
++      end)
++    !roots;
++  while not (Queue.is_empty queue) do
++    let s = Queue.take queue in
++    match Symbol.Map.find_opt s !defs with
++    | None -> ()
++    | Some deps ->
++      Symbol.Set.iter
++        (fun dep ->
++          if not (Symbol.Tbl.mem parent dep) then begin
++            Symbol.Tbl.add parent dep (Some s);
++            Queue.add dep queue
++          end)
++        deps
++  done;
++  let name s = Linkage_name.to_string (Symbol.label s) in
++  let matches s =
++    let sym = name s and pat = pattern in
++    let sl = String.length sym and pl = String.length pat in
++    let rec at i = i + pl <= sl
++      && (String.equal (String.sub sym i pl) pat || at (i + 1))
++    in
++    pl > 0 && at 0
++  in
++  Format.fprintf ppf_dump "@.-use-lto why-live %S:@." pattern;
++  let found = ref false in
++  Symbol.Map.iter
++    (fun s _ ->
++      if matches s then begin
++        found := true;
++        Format.fprintf ppf_dump "  %s@." (name s);
++        let rec chain s =
++          match Symbol.Tbl.find parent s with
++          | None -> Format.fprintf ppf_dump "    <- kept by a root \
++              (the program result or a top-level effect)@."
++          | Some p -> Format.fprintf ppf_dump "    <- %s@." (name p); chain p
++          | exception Not_found ->
++            (* Unreachable from the roots: only referenced from function
++               bodies, e.g. a direct call.  Code references do not show in
++               the symbol graph; the caller is in the -dlto-dce listing. *)
++            Format.fprintf ppf_dump "    <- referenced directly from code \
++              (not through a symbol definition)@."
++        in
++        chain s
++      end)
++    !defs;
++  if not !found then
++    Format.fprintf ppf_dump "  (no defined symbol matches)@.";
++  Format.fprintf ppf_dump "@."
+ 
+ let link_whole_program ~backend ~ppf_dump ~crc_interfaces units_to_link =
+   let codes = get_flambda_codes units_to_link in
+@@ -375,7 +573,7 @@ let link_whole_program ~backend ~ppf_dump ~crc_interfaces units_to_link =
+   in
+   Compilation_unit.set_current compilation_unit;
+   let program = Flambda_utils.replace_compilation_unit_of_symbols compilation_unit program in
+-  let functions_before = count_functions program in
++  let stats_before = program_stats program in
+   (* No [Flambda_invariants.check_exn] here: the concatenated program mixes
+      variables from several compilation units (their [Set_of_closures_id] etc.
+      deliberately keep their originating unit, which [Flambda_to_clambda] relies
+@@ -407,16 +605,12 @@ let link_whole_program ~backend ~ppf_dump ~crc_interfaces units_to_link =
+     let open Flambda in
+     Let_symbol (Compilenv.current_unit_symbol (), Block (Tag.create_exn 0, []),
+                 cleaned_program.program_body) in
+-  let cleaned_program = { program with program_body } in
+-  let functions_after = count_functions cleaned_program in
+-  let removed = functions_before - functions_after in
+-  let pct =
+-    if functions_before = 0 then 0.
+-    else 100. *. float_of_int removed /. float_of_int functions_before
+-  in
+-  Printf.eprintf
+-    "-use-lto: kept %d of %d functions, eliminated %d as dead code (%.1f%%)\n%!"
+-    functions_after functions_before removed pct;
++  let cleaned_program = { cleaned_program with program_body } in
++  let stats_after = program_stats cleaned_program in
++  report_dce ~ppf_dump ~before:stats_before ~after:stats_after;
++  (match !Clflags.lto_why_live with
++   | None -> ()
++   | Some pattern -> why_live ~ppf_dump ~pattern cleaned_program);
+   compile_implementation_flambda
+     ~unit_prefix
+     ~backend
+diff --git a/driver/main_args.ml b/driver/main_args.ml
+index 51186e113e..5c30a2a9c7 100644
+--- a/driver/main_args.ml
++++ b/driver/main_args.ml
+@@ -678,6 +678,15 @@ let mk_dflambda f =
+ let mk_drawflambda f =
+   "-drawflambda", Arg.Unit f, " Print Flambda terms after closure conversion"
+ 
++let mk_dlto_dce f =
++  "-dlto-dce", Arg.Unit f, " Print a per-unit report of the dead code \
++      eliminated by a -use-lto link"
++
++let mk_dlto_why_live f =
++  "-dlto-why-live", Arg.String f,
++    "<substring>  Explain why each symbol whose linkage name contains \
++      <substring> is retained by a -use-lto link"
++
+ let mk_dflambda_invariants f =
+   "-dflambda-invariants", Arg.Unit f, " Check Flambda invariants \
+       around each pass"
+@@ -989,6 +998,8 @@ module type Optcommon_options = sig
+   val _clambda_checks : unit -> unit
+   val _dflambda : unit -> unit
+   val _drawflambda : unit -> unit
++  val _dlto_dce : unit -> unit
++  val _dlto_why_live : string -> unit
+   val _dflambda_invariants : unit -> unit
+   val _dflambda_no_invariants : unit -> unit
+   val _dflambda_let : int -> unit
+@@ -1398,6 +1409,8 @@ struct
+     mk_dcmm_invariants F._dcmm_invariants;
+     mk_dflambda F._dflambda;
+     mk_drawflambda F._drawflambda;
++    mk_dlto_dce F._dlto_dce;
++    mk_dlto_why_live F._dlto_why_live;
+     mk_dflambda_invariants F._dflambda_invariants;
+     mk_dflambda_no_invariants F._dflambda_no_invariants;
+     mk_dflambda_let F._dflambda_let;
+@@ -1519,6 +1532,8 @@ module Make_opttop_options (F : Opttop_options) = struct
+     mk_dcmm_invariants F._dcmm_invariants;
+     mk_drawflambda F._drawflambda;
+     mk_dflambda F._dflambda;
++    mk_dlto_dce F._dlto_dce;
++    mk_dlto_why_live F._dlto_why_live;
+     mk_dcmm F._dcmm;
+     mk_dsel F._dsel;
+     mk_dcombine F._dcombine;
+@@ -1721,6 +1736,8 @@ module Default = struct
+     let _dcombine = set dump_combine
+     let _dcse = set dump_cse
+     let _dflambda = set dump_flambda
++    let _dlto_dce = set dump_lto_dce
++    let _dlto_why_live s = lto_why_live := Some s
+     let _dflambda_invariants = set flambda_invariant_checks
+     let _dflambda_let stamp = dump_flambda_let := (Some stamp)
+     let _dflambda_no_invariants = clear flambda_invariant_checks
+diff --git a/driver/main_args.mli b/driver/main_args.mli
+index bb5eece850..986adeb2ea 100644
+--- a/driver/main_args.mli
++++ b/driver/main_args.mli
+@@ -211,6 +211,8 @@ module type Optcommon_options = sig
+   val _clambda_checks : unit -> unit
+   val _dflambda : unit -> unit
+   val _drawflambda : unit -> unit
++  val _dlto_dce : unit -> unit
++  val _dlto_why_live : string -> unit
+   val _dflambda_invariants : unit -> unit
+   val _dflambda_no_invariants : unit -> unit
+   val _dflambda_let : int -> unit
+diff --git a/utils/clflags.ml b/utils/clflags.ml
+index 2b8d45fc0d..5c00b8e1cb 100644
+--- a/utils/clflags.ml
++++ b/utils/clflags.ml
+@@ -189,6 +189,8 @@ let inlining_report = ref false    (* -inlining-report *)
+ let afl_instrument = ref Config.afl_instrument (* -afl-instrument *)
+ let afl_inst_ratio = ref 100           (* -afl-inst-ratio *)
+ let whole_program_rebuild = ref false  (* -use-lto *)
++let dump_lto_dce = ref false           (* -dlto-dce *)
++let lto_why_live = ref (None : string option) (* -dlto-why-live *)
+ 
+ let function_sections = ref Config.function_sections
+                                         (* -function-sections *)
+diff --git a/utils/clflags.mli b/utils/clflags.mli
+index 6775334244..db57911479 100644
+--- a/utils/clflags.mli
++++ b/utils/clflags.mli
+@@ -220,6 +220,8 @@ val afl_instrument : bool ref
+ val afl_inst_ratio : int ref
+ val function_sections : bool ref
+ val whole_program_rebuild : bool ref
++val dump_lto_dce : bool ref
++val lto_why_live : string option ref
+ 
+ val all_passes : string list ref
+ val dumped_pass : string -> bool
+-- 
+2.55.0
+

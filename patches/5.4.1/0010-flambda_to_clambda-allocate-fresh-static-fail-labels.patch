@@ -1,0 +1,109 @@
+From 73bf0973c177eb54f5c2d7cc561a9a33a8268609 Mon Sep 17 00:00:00 2001
+From: t <t@t>
+Date: Fri, 17 Jul 2026 23:01:22 -0700
+Subject: [PATCH] flambda_to_clambda: allocate fresh static-fail labels for
+ -use-lto
+
+The whole-program -use-lto link concatenates Flambda deserialised from every
+unit's .cmx.  Static exceptions are numbered by Lambda.next_raise_count, a
+counter reset to 0 at the start of each compilation, so ids from different
+units overlap; and to_clambda mints further ones from the same counter while
+lowering (e.g. the shared switch default).  Emitting Static_exception.to_int
+directly as the Clambda static-fail label therefore lets a freshly minted id
+equal a deserialised one in the same function, producing two Cmm continuation
+handlers with the same number.
+
+Depending on which handler a duplicated exit resolves to, the malformed
+control flow either leaves loop locals live at function entry
+(Liveness.fundecl) or pairs a static raise with the wrong catch's binders
+(Invalid_argument "List.iter2" in Cmmgen.transl_catch).  Both are the same
+collision; -dcmm-invariants reports "Continuation N declared in more than one
+handler".
+
+Allocate a fresh label per Static_catch, recorded in the lowering
+environment and looked up at each Static_raise, so labels are unique within
+every lowered function regardless of the deserialised ids.  For separate
+compilation this only renumbers labels, leaving behaviour unchanged.
+---
+ middle_end/flambda/flambda_to_clambda.ml | 29 ++++++++++++++++++++++--
+ 1 file changed, 27 insertions(+), 2 deletions(-)
+
+diff --git a/middle_end/flambda/flambda_to_clambda.ml b/middle_end/flambda/flambda_to_clambda.ml
+index 16298318f4..366a9ec790 100644
+--- a/middle_end/flambda/flambda_to_clambda.ml
++++ b/middle_end/flambda/flambda_to_clambda.ml
+@@ -139,6 +139,9 @@ module Env : sig
+   val add_fresh_mutable_ident : t -> Mutable_variable.t -> V.t * t
+   val ident_for_mutable_var_exn : t -> Mutable_variable.t -> V.t
+ 
++  val add_static_exception : t -> Static_exception.t -> int * t
++  val find_static_exception : t -> Static_exception.t -> int
++
+   val add_allocated_const : t -> Symbol.t -> Allocated_const.t -> t
+   val allocated_const_for_symbol : t -> Symbol.t -> Allocated_const.t option
+ 
+@@ -148,6 +151,15 @@ end = struct
+     { subst : Clambda.ulambda Variable.Map.t;
+       var : V.t Variable.Map.t;
+       mutable_var : V.t Mutable_variable.Map.t;
++      (* Freshly-allocated Clambda static-fail label for each in-scope static
++         exception.  Under [-use-lto] the concatenated program carries static
++         exceptions deserialised from several units, each numbered from zero in
++         its own compilation, so their [to_int]s collide; lowering also mints new
++         ones from the same counter.  Trusting [to_int] as the label then yields
++         two Cmm handlers with the same continuation number in one function.
++         Allocating a fresh label per [Static_catch] here keeps every label in a
++         lowered function unique regardless of the source ids. *)
++      static_exn : int Static_exception.Map.t;
+       allocated_constant_for_symbol : Allocated_const.t Symbol.Map.t;
+     }
+ 
+@@ -155,6 +167,7 @@ end = struct
+     { subst = Variable.Map.empty;
+       var = Variable.Map.empty;
+       mutable_var = Mutable_variable.Map.empty;
++      static_exn = Static_exception.Map.empty;
+       allocated_constant_for_symbol = Symbol.Map.empty;
+     }
+ 
+@@ -177,6 +190,17 @@ end = struct
+     let mutable_var = Mutable_variable.Map.add mut_var id t.mutable_var in
+     id, { t with mutable_var; }
+ 
++  let add_static_exception t static_exn =
++    let label = Static_exception.to_int (Static_exception.create ()) in
++    label, { t with static_exn = Static_exception.Map.add static_exn label t.static_exn }
++
++  let find_static_exception t static_exn =
++    match Static_exception.Map.find_opt static_exn t.static_exn with
++    | Some label -> label
++    (* A raise whose catch is out of scope cannot arise from well-formed
++       Flambda; fall back to the historical numbering rather than fail. *)
++    | None -> Static_exception.to_int static_exn
++
+   let add_allocated_const t sym cons =
+     { t with
+       allocated_constant_for_symbol =
+@@ -308,16 +332,17 @@ let rec to_clambda t env (flam : Flambda.t) : Clambda.ulambda =
+     let def = Option.map (to_clambda t env) def in
+     Ustringswitch (arg, sw, def)
+   | Static_raise (static_exn, args) ->
+-    Ustaticfail (Static_exception.to_int static_exn,
++    Ustaticfail (Env.find_static_exception env static_exn,
+       List.map (subst_var env) args)
+   | Static_catch (static_exn, vars, body, handler) ->
++    let label, env = Env.add_static_exception env static_exn in
+     let env_handler, ids =
+       List.fold_right (fun (var, kind) (env, ids) ->
+           let id, env = Env.add_fresh_ident env var in
+           env, (VP.create id, kind) :: ids)
+         vars (env, [])
+     in
+-    Ucatch (Static_exception.to_int static_exn, ids,
++    Ucatch (label, ids,
+       to_clambda t env body, to_clambda t env_handler handler)
+   | Try_with (body, var, handler) ->
+     let id, env_handler = Env.add_fresh_ident env var in
+-- 
+2.55.0
+

@@ -1,0 +1,361 @@
+From ae02067cd98fcf75685dbd2257a70be20ac45397 Mon Sep 17 00:00:00 2001
+From: t <t@t>
+Date: Sat, 18 Jul 2026 21:46:08 -0700
+Subject: [PATCH] asmlink: link-time evaluation of module initializers under
+ -use-lto
+
+A fuel-bounded interpreter for the effect-free fragment of Flambda
+evaluates Initialize_symbol field computations at the -use-lto link:
+constants, immutable blocks, strings and floats, arithmetic, matches
+including static catches, local mutable state (Let_mutable/Assign, which
+is invisible from outside), and direct calls -- recursion included, since
+a Direct apply needs the callee's body but never its closure value, so
+closure bindings evaluate to an opaque token that only aborts if actually
+consumed.  Indirect calls, heap effects, mutable or closure results,
+out-of-range accesses and exhausted fuel abort the field, which then keeps
+its runtime computation; evaluation is disabled when the target's integer
+width differs from the host's.
+
+Successful evaluations are residualized as constant expression trees;
+Lift_constants and Share_constants then turn them into static data, and a
+late Initialize_symbol_to_let_symbol (after lifting, when every field of a
+fully evaluated block has collapsed to a single Symbol or Const let)
+converts the whole block to Let_symbol.  The initialization work is done
+once at link time and shipped as preinitialized memory instead of startup
+code, and the builder functions it consumed become dead: a recursive
+20-element table constructor evaluates to its list and is eliminated
+entirely (kept 0 of 1), with byte-identical program output against the
+non-LTO build.
+
+The exact-output tests gain %opaque barriers: the evaluator (correctly)
+decided lto_dce's conditional raise guard and executed lto_dup_labels'
+matches -- static catches and all -- at link time, so their scrutinees now
+come from Popaque, which is Arbitrary_effects for the purity analysis and
+unevaluable for the interpreter.
+---
+ asmcomp/asmlink.ml                            | 295 ++++++++++++++++++
+ .../tests/lto-dce/lto_dce.compilers.reference |   8 +-
+ .../lto_dup_labels.compilers.reference        |   2 +-
+ .../tests/lto-static-exn/lto_dup_labels.ml    |  15 +-
+ 1 file changed
+
+diff --git a/asmcomp/asmlink.ml b/asmcomp/asmlink.ml
+index 5d6ea40a4c..30128e0327 100644
+--- a/asmcomp/asmlink.ml
++++ b/asmcomp/asmlink.ml
+@@ -741,6 +741,296 @@ let remove_pure_initializers ~pure (program : Flambda.program) =
+   in
+   { program with program_body = walk program.program_body }
+ 
++(* Link-time evaluation of module initializers ("partial evaluation").
++
++   A fuel-bounded interpreter for the effect-free fragment of Flambda
++   evaluates [Initialize_symbol] field computations at link time: constants,
++   blocks, immutable strings and floats, arithmetic, matches (including
++   static catches), local mutable state ([Let_mutable]/[Assign], invisible
++   from outside), and direct calls -- through recursion, since a [Direct]
++   apply needs only the callee's body, never the closure value.  Anything
++   else (indirect calls, heap effects, closures or mutable data as results,
++   out-of-range accesses, exhausted fuel) aborts that field, which then
++   keeps its runtime computation.
++
++   Successful evaluations are residualized as constant expression trees;
++   the subsequent [Lift_constants]/[Share_constants] turn those into static
++   data and [Initialize_symbol_to_let_symbol] converts fully-evaluated
++   blocks into [Let_symbol], so the work is done once at link time and
++   shipped as preinitialized memory instead of startup code.  Evaluation
++   assumes host and target integers agree, so it is disabled when
++   [Targetint.size] differs from the host's word size. *)
++
++type preeval_value =
++  | VInt of int
++  | VFloat of float
++  | VString of string
++  | VBlock of int * preeval_value array
++  | VOpaque
++  (** A value that may be bound but never consumed: a closure or an
++      arbitrary symbol.  A [Direct] apply does not consume the callee
++      closure, so [let f = project_closure ... in f x y] evaluates; any
++      real consumption of a [VOpaque] gives up. *)
++
++exception Preeval_give_up
++exception Preeval_static_exit of Static_exception.t * preeval_value list
++
++let preeval_fuel = 100_000
++let preeval_max_nodes = 5_000
++
++let function_bodies program =
++  let bodies = ref Closure_id.Map.empty in
++  Flambda_iterators.iter_on_set_of_closures_of_program program
++    ~f:(fun ~constant:_ (set : Flambda.set_of_closures) ->
++      Variable.Map.iter
++        (fun fun_var (decl : Flambda.function_declaration) ->
++          bodies :=
++            Closure_id.Map.add (Closure_id.wrap fun_var) decl !bodies)
++        set.function_decls.funs);
++  !bodies
++
++let preeval_field ~bodies ~sym_env expr =
++  let fuel = ref preeval_fuel in
++  let step () =
++    decr fuel;
++    if !fuel <= 0 then raise Preeval_give_up
++  in
++  let as_int = function VInt n -> n | _ -> raise Preeval_give_up in
++  let find env v =
++    match Variable.Map.find_opt v env with
++    | Some value -> value
++    | None -> raise Preeval_give_up
++  in
++  let eval_prim (prim : Clambda_primitives.primitive) args =
++    match prim, args with
++    | Pmakeblock (tag, Immutable, _), _ ->
++      VBlock (tag, Array.of_list args)
++    | Pfield (i, _, _), [VBlock (_, elems)] when i >= 0 && i < Array.length elems ->
++      elems.(i)
++    | Pnegint, [a] -> VInt (- (as_int a))
++    | Paddint, [a; b] -> VInt (as_int a + as_int b)
++    | Psubint, [a; b] -> VInt (as_int a - as_int b)
++    | Pmulint, [a; b] -> VInt (as_int a * as_int b)
++    | Pdivint _, [a; b] when as_int b <> 0 -> VInt (as_int a / as_int b)
++    | Pmodint _, [a; b] when as_int b <> 0 -> VInt (as_int a mod as_int b)
++    | Pandint, [a; b] -> VInt (as_int a land as_int b)
++    | Porint, [a; b] -> VInt (as_int a lor as_int b)
++    | Pxorint, [a; b] -> VInt (as_int a lxor as_int b)
++    | Plslint, [a; b] when as_int b >= 0 && as_int b < 63 ->
++      VInt (as_int a lsl as_int b)
++    | Plsrint, [a; b] when as_int b >= 0 && as_int b < 63 ->
++      VInt (as_int a lsr as_int b)
++    | Pasrint, [a; b] when as_int b >= 0 && as_int b < 63 ->
++      VInt (as_int a asr as_int b)
++    | Poffsetint n, [a] -> VInt (as_int a + n)
++    | Pintcomp c, [VInt a; VInt b] ->
++      let r =
++        match c with
++        | Ceq -> a = b | Cne -> a <> b
++        | Clt -> a < b | Cgt -> a > b
++        | Cle -> a <= b | Cge -> a >= b
++      in
++      VInt (if r then 1 else 0)
++    | Pnot, [a] -> VInt (if as_int a = 0 then 1 else 0)
++    | Psequand, [a; b] -> VInt (if as_int a <> 0 && as_int b <> 0 then 1 else 0)
++    | Psequor, [a; b] -> VInt (if as_int a <> 0 || as_int b <> 0 then 1 else 0)
++    | Pisint, [VInt _] -> VInt 1
++    | Pisint, [(VBlock _ | VString _ | VFloat _)] -> VInt 0
++    | Pisout, [h; x] ->
++      let h = as_int h and x = as_int x in
++      VInt (if x < 0 || x > h then 1 else 0)
++    | Pstringlength, [VString s] -> VInt (String.length s)
++    | (Pstringrefu | Pstringrefs), [VString s; VInt i]
++      when i >= 0 && i < String.length s ->
++      VInt (Char.code s.[i])
++    | _ -> raise Preeval_give_up
++  in
++  let rec eval env mut (expr : Flambda.t) =
++    step ();
++    match expr with
++    | Var v -> find env v
++    | Let { var; defining_expr; body; _ } ->
++      let value = eval_named env mut defining_expr in
++      eval (Variable.Map.add var value env) mut body
++    | Let_mutable { var; initial_value; contents_kind = _; body } ->
++      let cell = ref (find env initial_value) in
++      eval env (Mutable_variable.Map.add var cell mut) body
++    | Assign { being_assigned; new_value } ->
++      (match Mutable_variable.Map.find_opt being_assigned mut with
++       | Some cell -> cell := find env new_value; VInt 0
++       | None -> raise Preeval_give_up)
++    | If_then_else (cond, ifso, ifnot) ->
++      if as_int (find env cond) <> 0 then eval env mut ifso
++      else eval env mut ifnot
++    | Switch (arg, sw) ->
++      let branch =
++        match find env arg with
++        | VInt n -> List.assoc_opt n sw.consts
++        | VBlock (tag, _) -> List.assoc_opt tag sw.blocks
++        | _ -> raise Preeval_give_up
++      in
++      (match branch, sw.failaction with
++       | Some e, _ -> eval env mut e
++       | None, Some e -> eval env mut e
++       | None, None -> raise Preeval_give_up)
++    | String_switch (arg, cases, default) ->
++      (match find env arg with
++       | VString s ->
++         (match List.assoc_opt s cases, default with
++          | Some e, _ -> eval env mut e
++          | None, Some e -> eval env mut e
++          | None, None -> raise Preeval_give_up)
++       | _ -> raise Preeval_give_up)
++    | Static_raise (exn, args) ->
++      raise (Preeval_static_exit (exn, List.map (find env) args))
++    | Static_catch (exn, vars, body, handler) ->
++      (try eval env mut body with
++       | Preeval_static_exit (exn', values)
++         when Static_exception.equal exn exn' ->
++         (match
++            List.fold_left2
++              (fun env (var, _kind) value -> Variable.Map.add var value env)
++              env vars values
++          with
++          | env -> eval env mut handler
++          | exception Invalid_argument _ -> raise Preeval_give_up))
++    | While (cond, body) ->
++      while as_int (eval env mut cond) <> 0 do
++        ignore (eval env mut body : preeval_value)
++      done;
++      VInt 0
++    | For { bound_var; from_value; to_value; direction; body } ->
++      let lo = as_int (find env from_value)
++      and hi = as_int (find env to_value) in
++      let iter i = ignore (eval (Variable.Map.add bound_var (VInt i) env) mut body : preeval_value) in
++      (match direction with
++       | Upto -> for i = lo to hi do iter i done
++       | Downto -> for i = lo downto hi do iter i done);
++      VInt 0
++    | Apply { func = _; args; kind = Direct closure_id; _ } ->
++      (match Closure_id.Map.find_opt closure_id bodies with
++       | None -> raise Preeval_give_up
++       | Some (decl : Flambda.function_declaration) ->
++         let args = List.map (find env) args in
++         (match
++            List.fold_left2
++              (fun env param value ->
++                Variable.Map.add (Parameter.var param) value env)
++              Variable.Map.empty decl.params args
++          with
++          | env -> eval env Mutable_variable.Map.empty decl.body
++          | exception Invalid_argument _ -> raise Preeval_give_up))
++    | Apply { kind = Indirect; _ } | Send _ | Try_with _
++    | Proved_unreachable -> raise Preeval_give_up
++  and eval_named env mut (named : Flambda.named) =
++    step ();
++    match named with
++    | Const (Int n) -> VInt n
++    | Const (Char c) -> VInt (Char.code c)
++    | Allocated_const (Immutable_string s) -> VString s
++    | Allocated_const (Float f) -> VFloat f
++    | Read_mutable var ->
++      (match Mutable_variable.Map.find_opt var mut with
++       | Some cell -> !cell
++       | None -> raise Preeval_give_up)
++    | Read_symbol_field (s, i) ->
++      (match Symbol.Map.find_opt s sym_env with
++       | Some fields when i >= 0 && i < Array.length fields ->
++         (match fields.(i) with
++          | Some value -> value
++          | None -> raise Preeval_give_up)
++       | _ -> raise Preeval_give_up)
++    | Prim (prim, args, _) ->
++      eval_prim prim (List.map (find env) args)
++    | Expr e -> eval env mut e
++    | Symbol _ | Set_of_closures _ | Project_closure _
++    | Project_var _ | Move_within_set_of_closures _ -> VOpaque
++    | Allocated_const _ -> raise Preeval_give_up
++  in
++  let rec count_nodes v =
++    match v with
++    | VInt _ | VFloat _ | VString _ -> 1
++    | VOpaque ->
++      (* An opaque value cannot be residualized. *)
++      raise Preeval_give_up
++    | VBlock (_, elems) ->
++      Array.fold_left (fun acc e -> acc + count_nodes e) 1 elems
++  in
++  try
++    let value = eval Variable.Map.empty Mutable_variable.Map.empty expr in
++    if count_nodes value <= preeval_max_nodes then Some value else None
++  with Preeval_give_up | Preeval_static_exit _ -> None
++
++(* [preeval_value] back to Flambda: a tree of lets ending in the value's
++   variable, which [Lift_constants] then hoists to static data. *)
++let rec preeval_bind value (k : Variable.t -> Flambda.t) : Flambda.t =
++  match value with
++  | VOpaque -> assert false  (* excluded by [count_nodes] before residualizing *)
++  | VInt n ->
++    let var = Variable.create Internal_variable_names.const_int in
++    Flambda.create_let var (Const (Int n)) (k var)
++  | VFloat f ->
++    let var = Variable.create Internal_variable_names.const_float in
++    Flambda.create_let var (Allocated_const (Float f)) (k var)
++  | VString s ->
++    let var = Variable.create Internal_variable_names.const_string in
++    Flambda.create_let var (Allocated_const (Immutable_string s)) (k var)
++  | VBlock (tag, elems) ->
++    let rec bind_elems acc = function
++      | [] ->
++        let var = Variable.create Internal_variable_names.const_block in
++        Flambda.create_let var
++          (Prim (Pmakeblock (tag, Immutable, None), List.rev acc,
++                 Debuginfo.none))
++          (k var)
++      | elem :: rest ->
++        preeval_bind elem (fun var -> bind_elems (var :: acc) rest)
++    in
++    bind_elems [] (Array.to_list elems)
++
++let preeval_residual value =
++  preeval_bind value (fun var -> Flambda.Var var)
++
++let preeval_initializers (program : Flambda.program) =
++  if Targetint.size <> Sys.word_size then program
++  else begin
++    let bodies = function_bodies program in
++    let sym_env = ref Symbol.Map.empty in
++    let record_symbol s fields =
++      sym_env := Symbol.Map.add s (Array.of_list fields) !sym_env
++    in
++    let rec walk (body : Flambda.program_body) : Flambda.program_body =
++      match body with
++      | Let_symbol (s, (Block (_, fields) as def), k) ->
++        record_symbol s
++          (List.map
++             (function
++               | (Flambda.Const (Int n)
++                   : Flambda.constant_defining_value_block_field) ->
++                 Some (VInt n)
++               | Flambda.Const (Char c) -> Some (VInt (Char.code c))
++               | Flambda.Symbol _ -> None)
++             fields);
++        Let_symbol (s, def, walk k)
++      | Let_symbol (s, def, k) -> Let_symbol (s, def, walk k)
++      | Let_rec_symbol (l, k) -> Let_rec_symbol (l, walk k)
++      | Initialize_symbol (s, tag, fields, k) ->
++        let values_and_fields =
++          List.map
++            (fun field ->
++              match preeval_field ~bodies ~sym_env:!sym_env field with
++              | Some value -> Some value, preeval_residual value
++              | None -> None, field)
++            fields
++        in
++        record_symbol s (List.map fst values_and_fields);
++        Initialize_symbol (s, tag, List.map snd values_and_fields, walk k)
++      | Effect (e, k) -> Effect (e, walk k)
++      | End _ as body -> body
++    in
++    { program with program_body = walk program.program_body }
++  end
++
+ let link_whole_program ~backend ~ppf_dump ~crc_interfaces units_to_link =
+   let codes = get_flambda_codes units_to_link in
+   let program =
+@@ -771,6 +1061,7 @@ let link_whole_program ~backend ~ppf_dump ~crc_interfaces units_to_link =
+     let program =
+       Remove_unused_program_constructs.remove_unused_program_constructs program
+     in
++    let program = preeval_initializers program in
+     let program =
+       let pure = compute_pure_functions program in
+       remove_pure_initializers ~pure program
+@@ -798,6 +1089,10 @@ let link_whole_program ~backend ~ppf_dump ~crc_interfaces units_to_link =
+   in
+   let cleaned_program = Lift_constants.lift_constants ~backend cleaned_program in
+   let cleaned_program = Share_constants.share_constants cleaned_program in
++  (* After lifting, a fully preevaluated initializer's fields are single
++     [Symbol]/[Const] lets, which this converts to a static [Let_symbol]
++     block: no startup code remains for it at all. *)
++  let cleaned_program = Initialize_symbol_to_let_symbol.run cleaned_program in
+   let cleaned_program = Remove_unused_program_constructs.remove_unused_program_constructs cleaned_program in
+   if !Clflags.dump_flambda then
+     Format.fprintf ppf_dump "After cleaning:@ %a@."

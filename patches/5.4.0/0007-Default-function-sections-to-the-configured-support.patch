@@ -1,0 +1,33 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Thomas Gazagnaire <thomas@gazagnaire.org>
+Date: Sat, 12 Jul 2026 15:40:00 -0700
+Subject: [PATCH 8/8] Default -function-sections to the configured support
+
+The cross compiler is configured with function-sections support, but
+emission stayed opt-in per invocation: only build systems that know to
+pass -function-sections get collectable sections, so the toolchain's
+own stdlib had them while every dune- or opam-built target library did
+not, and -Wl,--gc-sections at unikernel link time had almost nothing
+to collect.
+
+Default Clflags.function_sections to Config.function_sections: a
+compiler built with support emits sections everywhere by default (the
+flag remains available), and a compiler built without support keeps
+the false default. Host compilers are separate builds and unaffected.
+---
+ utils/clflags.ml | 3 ++-
+ 1 file changed, 2 insertions(+), 1 deletion(-)
+
+diff -ruN oc-A/utils/clflags.ml oc-B/utils/clflags.ml
+--- a/utils/clflags.ml	2026-07-12 15:38:34
++++ b/utils/clflags.ml	2026-07-12 15:38:53
+@@ -190,7 +190,8 @@
+ let afl_inst_ratio = ref 100           (* -afl-inst-ratio *)
+ let whole_program_rebuild = ref false  (* -use-lto *)
+ 
+-let function_sections = ref false      (* -function-sections *)
++let function_sections = ref Config.function_sections
++                                        (* -function-sections *)
+ 
+ let simplify_rounds = ref None        (* -rounds *)
+ let default_simplify_rounds = ref 1        (* -rounds *)
