@@ -131,7 +131,12 @@ EOF
       cat "$b"/cflags
       # Access the compiler base headers, such as x86intrin.h, if needed
       printf '      -isystem %s \\\n' "${includedir@Q}"
-      printf '      -static \\\n'
+      # A static-PIE backend (OPTIMIZE_PIE) links with -static-pie from its
+      # learned ldflags; adding -static beside it makes the driver drop the
+      # PIE part, so only the fixed-address backends get it.
+      if ! grep -q -- '-static-pie' "$b"/ldflags; then
+        printf '      -static \\\n'
+      fi
       printf '      "$@" \\\n'
       # Disable warnings due to musl code
       printf '      -D _REDIR_TIME64=0 -Wno-undef -Wno-strict-prototypes\n'

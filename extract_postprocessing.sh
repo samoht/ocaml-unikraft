@@ -7,6 +7,7 @@
 # use its powerful ${v//"$var"/...} substitution
 
 # extract_postprocessing <unikraftdir> <builddir> <targetradix> <targetsuffix>
+#     [<fullconfig> <toolprefixfile>]
 
 UNIKRAFTDIR="${1%/}"
 REALUNIKRAFTDIR="$(realpath "$UNIKRAFTDIR")"
@@ -16,6 +17,9 @@ TARGETRDX="$3"
 PATHTARGET="$BUILDDIR/$TARGETRDX"
 REALPATHTARGET="$REALBUILDDIR/$TARGETRDX"
 TARGETSUFFIX="$(< "$4")"
+FULLCONFIG="${5:-}"
+TOOLPREFIX=
+[ -n "${6:-}" ] && TOOLPREFIX="$(< "$6")"
 
 IFS='\n'
 
@@ -41,4 +45,19 @@ process() {
 }
 
 echo '      mv "$TARGET" "$TARGET".'"$TARGETSUFFIX"
+
+# A static-PIE image (OPTIMIZE_PIE) self-relocates through the .uk_reloc table
+# that mkukreloc.py distills from the link's dynamic relocations. Unikraft runs
+# that step inside the rule producing the debug image, so the verbose replay
+# the post-processing steps are learned from never re-runs it; inject it here,
+# on the freshly linked image, ahead of the learned strip/bootinfo/binary
+# steps. A failure must abort the build: an image whose table stayed empty
+# boots at the wrong addresses instead of failing loudly.
+if [ -n "$FULLCONFIG" ] && grep -q '^CONFIG_OPTIMIZE_PIE=y' "$FULLCONFIG"; then
+  printf '      READELF=%sreadelf NM=%snm "${UKLIBDIR}"/support/scripts/mkukreloc.py "$TARGET".%s || exit 1\n' \
+    "$TOOLPREFIX" "$TOOLPREFIX" "$TARGETSUFFIX"
+  printf '      %sobjcopy --update-section .uk_reloc="$TARGET".%s.uk_reloc.bin "$TARGET".%s || exit 1\n' \
+    "$TOOLPREFIX" "$TARGETSUFFIX" "$TARGETSUFFIX"
+fi
+
 process

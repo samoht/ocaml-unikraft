@@ -230,7 +230,8 @@ $(BLDSHAREDIR)/.poststeps.log: $(BACKENDBUILT) | $(BLDSHAREDIR)
 	+$(UKMAKE) sub_make_exec=1 -W "$$PWD/$(BEBLDLIBDIR)"/dummykernel_*.dbg \
 	    --no-print-directory V=1 > $@
 
-$(BLDSHAREDIR)/poststeps: $(BLDSHAREDIR)/.poststeps.log $(BLDSHAREDIR)/.suffix
+$(BLDSHAREDIR)/poststeps: $(BLDSHAREDIR)/.poststeps.log $(BLDSHAREDIR)/.suffix \
+    $(BLDSHAREDIR)/toolprefix
 	sed -e '/^[*A-Z]/d' \
 	    -e '/^cmp.*fullconfig.*config/d' \
 	    -e '/sh provided_syscalls.in/d' \
@@ -238,7 +239,7 @@ $(BLDSHAREDIR)/poststeps: $(BLDSHAREDIR)/.poststeps.log $(BLDSHAREDIR)/.suffix
 	| bash extract_postprocessing.sh "$(UNIKRAFT)" \
 	    "$$PWD/$(BEBLDLIBDIR)" \
 	    dummykernel_$(subst firecracker,fc,$(OCUKPLAT))-$(OCUKARCH) \
-	    $(BLDSHAREDIR)/.suffix > $@
+	    $(BLDSHAREDIR)/.suffix $(CONFIG) $(BLDSHAREDIR)/toolprefix > $@
 
 .PHONY: backend
 backend: $(BACKENDBUILT) \
