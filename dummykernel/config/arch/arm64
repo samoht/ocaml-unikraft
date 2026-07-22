@@ -8,3 +8,7 @@ CONFIG_LIBUKRANDOM_LCPU=n
 CONFIG_LIBUKINTCTLR_GICV3=y
 CONFIG_LIBUKTTY_PL011_EARLY_CONSOLE=n
 CONFIG_LIBUKTTY_NS16550_EARLY_CONSOLE=n
+
+# Static-PIE so relocatable loaders (vz VZLinuxBootLoader, EFI) accept the
+# Image and libukreloc relocates it from any load base.
+CONFIG_OPTIMIZE_PIE=y
