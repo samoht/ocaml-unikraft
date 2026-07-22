@@ -1,7 +1,7 @@
-From 3bf151678f524f65a96d0e2173735e37243b5082 Mon Sep 17 00:00:00 2001
+From ec6d9092c98e2cb69144e20145bd7a9cb6b67803 Mon Sep 17 00:00:00 2001
 From: Thomas Gazagnaire <thomas@gazagnaire.org>
 Date: Wed, 8 Jul 2026 23:43:23 -0700
-Subject: [PATCH 6/6] Makefile.cross: keep -function-sections off the host .opt
+Subject: [PATCH] Makefile.cross: keep -function-sections off the host .opt
  tools
 
 crossopt builds ocamlc.opt/ocamlopt.opt and the *.opt tools with the host
@@ -40,3 +40,6 @@ index b0a21c3d7c..af7e0d5b21 100644
  	# We now build the compiler libs again, but for target this time
  	rm -f $(ocamlcommon_NCOBJS) $(ocamlmiddleend_NCOBJS) \
  	  $(ocamlbytecomp_NCOBJS) $(ocamloptcomp_NCOBJS) \
+-- 
+2.55.0
+

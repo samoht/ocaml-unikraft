@@ -1,0 +1,94 @@
+From c96a8f104583a80c687735fc5d13d258bf40bcf0 Mon Sep 17 00:00:00 2001
+From: Thomas Gazagnaire <thomas@gazagnaire.org>
+Date: Mon, 20 Jul 2026 20:04:34 -0700
+Subject: [PATCH] asmlink: guard the cleanup's inlining stage; unroll only on
+ true constants
+
+The single-use collapse accepted any immutable block as a structurally
+constant argument, so a cons cell of runtime data qualified and a
+runtime-length walker could be peeled once per cleanup round for as long
+as unrelated elimination kept the fixpoint running; on a large program
+this compounded into a seventy-fold flambda-level code-size explosion,
+reported as a negative elimination percentage and dying in the assembler
+with pc-relative offsets out of range.  The Unroll marking now requires
+a true constant (a constant, symbol, or symbol-field read, through plain
+aliases only), which still folds the literal-device-list case.
+
+Independently, the fixpoint now guards against runaway growth, judged
+per stage rather than per round: discarding a whole grown round would
+also revert that round's legitimate eliminations.  The shrink passes
+(constructs, evaluation, purity, closure variables) commit
+unconditionally; a snapshot is taken and only the inlining stage is
+discarded if it grew the program by more than a quarter.  Growth is
+judged after cleaning the inlined result, because a single-use move
+counts twice until the abandoned original is collected; measuring too
+early would discard the collapse the guard exists to protect.  A
+growing specialisation costs one wasted stage per round instead of an
+unbuildable program.
+---
+ asmcomp/asmlink.ml | 34 +++++++++++++++++++++++++++++++---
+ 1 file changed, 31 insertions(+), 3 deletions(-)
+
+diff --git a/asmcomp/asmlink.ml b/asmcomp/asmlink.ml
+index 86fe51d781..4f4f067b08 100644
+--- a/asmcomp/asmlink.ml
++++ b/asmcomp/asmlink.ml
+@@ -1250,10 +1250,14 @@ let mark_single_use_applies (program : Flambda.program) =
+       Flambda_iterators.iter_all_immutable_let_bindings expr
+         ~f:(fun var (named : Flambda.named) ->
+           match named with
+-          | Const _ | Symbol _ | Allocated_const _ | Read_symbol_field _
+-          | Prim (Pmakeblock (_, Immutable, _), _, _) ->
++          (* True constants only: an immutable block or a field projection
++             can wrap runtime data, and treating those as constant let a
++             runtime-length walker be peeled once per cleanup round, which
++             compounded into a runaway (a seventy-fold code-size explosion
++             and pc-relative offsets out of assembler range downstream). *)
++          | Const _ | Symbol _ | Allocated_const _ | Read_symbol_field _ ->
+             struct_consts := Variable.Set.add var !struct_consts
+-          | Expr (Var a) | Prim (Pfield _, [a], _) ->
++          | Expr (Var a) ->
+             aliases := (var, a) :: !aliases
+           | _ -> ()));
+   let rec close () =
+@@ -1381,6 +1385,12 @@ let link_whole_program ~backend ~ppf_dump ~crc_interfaces units_to_link =
+       Remove_unused_closure_vars.remove_unused_closure_variables
+         ~remove_direct_call_surrogates:false program
+     in
++    (* Everything up to here only removes; it is committed unconditionally.
++       The inlining stage below is the only one that can grow the program,
++       so it alone is guarded: if its result is materially larger than the
++       snapshot, the stage is discarded and the round keeps the cleanups. *)
++    let shrunk = program in
++    let size_shrunk = (program_stats shrunk).total_size in
+     let program =
+       (* Inlining here is opt-in: with the whole program in view it can
+          specialise an interpreter over its statically known data (unrolling
+@@ -1395,6 +1405,24 @@ let link_whole_program ~backend ~ppf_dump ~crc_interfaces units_to_link =
+         ~round:0
+         program
+     in
++    let program =
++      (* Collect before judging: a single-use move counts twice until the
++         abandoned original is removed, so growth is only real if it
++         survives a cleanup of the inlined result. *)
++      Remove_unused_program_constructs.remove_unused_program_constructs
++        program
++    in
++    let program =
++      let sz = (program_stats program).total_size in
++      if sz > size_shrunk + size_shrunk / 4 then begin
++        Printf.eprintf
++          "-use-lto: inlining stage grew the program (%d -> %d size \
++           units); keeping the cleanups and discarding it\n%!"
++          size_shrunk sz;
++        shrunk
++      end
++      else program
++    in
+     if (program_stats program).fun_count < count then clean program
+     else program
+   in
+-- 
+2.55.0
+

@@ -1,7 +1,7 @@
-From d729c50315e70f2c05cd502c84721a90feb50a98 Mon Sep 17 00:00:00 2001
+From 31564ae1e34af3d7a50c0c23b534fb74843b10ce Mon Sep 17 00:00:00 2001
 From: Thomas Gazagnaire <thomas@gazagnaire.org>
-Date: Thu, 9 Jul 2026 11:18:10 -0700
-Subject: [PATCH] prim
+Date: Mon, 20 Jul 2026 10:51:36 -0700
+Subject: [PATCH] flambda: refine the effects of a few C primitives
 
 ---
  middle_end/flambda/simplify_primitives.ml | 14 ++++++++++++--
@@ -54,3 +54,6 @@ index e92b526089..9fedf6a2ad 100644
    | Pccall _ -> Arbitrary_effects, Has_coeffects
    | Praise _ -> Arbitrary_effects, No_coeffects
    | Prunstack | Pperform | Presume | Preperform ->
+-- 
+2.55.0
+

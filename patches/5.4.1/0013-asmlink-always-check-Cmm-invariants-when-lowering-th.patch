@@ -1,0 +1,48 @@
+From aed38cea78b88da5f87b11097ea6f7a2d1332c52 Mon Sep 17 00:00:00 2001
+From: Thomas Gazagnaire <thomas@gazagnaire.org>
+Date: Mon, 20 Jul 2026 10:51:36 -0700
+Subject: [PATCH] asmlink: always check Cmm invariants when lowering the
+ -use-lto program
+
+The whole-program path deliberately skips Flambda_invariants (the
+concatenated term mixes compilation units), which is how the static-exception
+label collision reached Liveness.fundecl as a fatal error and, depending on
+which handler won, could have shipped a silent miscompilation.  Force the Cmm
+invariant check for the -use-lto lowering so any malformed control flow the
+Flambda stages produce is diagnosed at the Cmm boundary, with a message
+naming the offending continuation, whether or not the user passed
+-dcmm-invariants.  The check costs one extra traversal of each generated
+fundecl at link time, which the whole-program link already dwarfs.
+---
+ asmcomp/asmlink.ml | 15 ++++++++++-----
+ 1 file changed, 10 insertions(+), 5 deletions(-)
+
+diff --git a/asmcomp/asmlink.ml b/asmcomp/asmlink.ml
+index 43c093469d..e393bbd976 100644
+--- a/asmcomp/asmlink.ml
++++ b/asmcomp/asmlink.ml
+@@ -629,11 +629,16 @@ let link_whole_program ~backend ~ppf_dump ~crc_interfaces units_to_link =
+   (match !Clflags.lto_why_live with
+    | None -> ()
+    | Some pattern -> why_live ~ppf_dump ~pattern cleaned_program);
+-  compile_implementation_flambda
+-    ~unit_prefix
+-    ~backend
+-    ~ppf_dump
+-    cleaned_program;
++  (* The whole-program path deliberately skips [Flambda_invariants], so lower
++     with the Cmm invariant check always on: it catches malformed control flow
++     (e.g. duplicated continuation labels) at link time, where the alternative
++     is a Mach-level fatal error or a silent miscompilation. *)
++  Misc.protect_refs [Misc.R (Clflags.cmm_invariants, true)] (fun () ->
++    compile_implementation_flambda
++      ~unit_prefix
++      ~backend
++      ~ppf_dump
++      cleaned_program);
+   (* This cmx file is never written. *)
+   let unit_filename = unit_prefix ^ ".cmx" in
+   let object_filename = unit_prefix ^ ext_obj in
+-- 
+2.55.0
+

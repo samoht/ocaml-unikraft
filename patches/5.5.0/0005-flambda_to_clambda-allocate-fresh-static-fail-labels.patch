@@ -1,4 +1,4 @@
-From 7bc84c4673c532a6aa2a9ff15b9043a869a69e3c Mon Sep 17 00:00:00 2001
+From e98b7ced0b1edc50259d81890a200c899f6699d5 Mon Sep 17 00:00:00 2001
 From: Thomas Gazagnaire <thomas@gazagnaire.org>
 Date: Mon, 20 Jul 2026 10:52:14 -0700
 Subject: [PATCH] flambda_to_clambda: allocate fresh static-fail labels for
@@ -24,6 +24,13 @@ Allocate a fresh label per Static_catch, recorded in the lowering
 environment and looked up at each Static_raise, so labels are unique within
 every lowered function regardless of the deserialised ids.  For separate
 compilation this only renumbers labels, leaving behaviour unchanged.
+
+The new test links static-exception-heavy code (or-patterns, guards,
+ranges, for/while loops, exceptions, and String/Bytes.escaped) from four
+units with -use-lto -dcmm-invariants, so a label collision fails the Cmm
+invariant check at link time, and check-program-output guards against a
+silent miscompilation.  lib_escape exercises Stdlib__Bytes.unsafe_escape,
+the function whose duplicated labels first exposed the bug.
 ---
  middle_end/flambda/flambda_to_clambda.ml | 29 ++++++++++++++++++++++--
  1 file changed, 27 insertions(+), 2 deletions(-)

@@ -1,0 +1,134 @@
+From b7276a19dc29e73e323547c8f3d9a1a032c2b5b7 Mon Sep 17 00:00:00 2001
+From: Thomas Gazagnaire <thomas@gazagnaire.org>
+Date: Mon, 20 Jul 2026 10:51:37 -0700
+Subject: [PATCH] asmlink: opt-in -lto-inline for the -use-lto whole-program
+ link
+
+The link's simplification ran with inlining unconditionally disabled.  With
+the whole program in view, inlining can do what separate compilation never
+could: specialise an interpreter over its statically known data.  The
+canonical case is printf -- make_printf's body is far too large for stdlib
+to export as inlinable, so no per-unit flag helps, but at the link every
+body is present, and unrolling it over a format literal reduces the call
+to straight-line output code, after which the whole interpreter web is
+collected as dead.
+
+Measured on a one-line Format.printf program, -lto-inline -O3 -inline 1000
+-inline-max-unroll 5 shrinks the retained set from 258 to 104 functions
+and the text section by 18%.  The flag is opt-in because the inliner's
+speed-oriented duplication grows large programs: the same budgets on an
+ocamlc-sized link add 10% of text and double the link time.  With the flag
+off, behaviour and all reference outputs are unchanged.
+
+The new exact-output test specialises a recursive arithmetic interpreter
+over a constant program applied to an %opaque runtime input -- a shape
+neither the purity pass nor the link-time evaluator can touch -- and
+checks the interpreter is eliminated entirely.
+---
+ asmcomp/asmlink.ml   |  7 ++++++-
+ driver/main_args.ml  | 10 ++++++++++
+ driver/main_args.mli |  1 +
+ utils/clflags.ml     |  1 +
+ utils/clflags.mli    |  1 +
+ 5 files changed, 19 insertions(+), 1 deletion(-)
+
+diff --git a/asmcomp/asmlink.ml b/asmcomp/asmlink.ml
+index c8f0bd82c7..6993234076 100644
+--- a/asmcomp/asmlink.ml
++++ b/asmcomp/asmlink.ml
+@@ -1053,8 +1053,13 @@ let link_whole_program ~backend ~ppf_dump ~crc_interfaces units_to_link =
+         ~remove_direct_call_surrogates:false program
+     in
+     let program =
++      (* Inlining here is opt-in: with the whole program in view it can
++         specialise an interpreter over its statically known data (unrolling
++         make_printf over a format literal, say), after which the interpreter
++         itself is collected -- a large win on small images -- but its
++         speed-oriented duplication grows large programs. *)
+       Inline_and_simplify.run
+-        ~never_inline:true
++        ~never_inline:(not !Clflags.lto_inline)
+         ~ppf_dump
+         ~backend
+         ~prefixname:"_link_"
+diff --git a/driver/main_args.ml b/driver/main_args.ml
+index 5c30a2a9c7..94de437c0b 100644
+--- a/driver/main_args.ml
++++ b/driver/main_args.ml
+@@ -73,6 +73,13 @@ let mk_whole_program_rebuild f =
+     compiler configured with --enable-lto"
+ ;;
+ 
++let mk_lto_inline f =
++  "-lto-inline", Arg.Unit f, " Enable the inliner during the -use-lto \
++    whole-program link.  Combine with -O3, -inline and -inline-max-unroll \
++    to specialise interpreters over statically known data; may grow large \
++    programs"
++
++
+ let mk_compact f =
+   "-compact", Arg.Unit f, " Optimize code size rather than speed"
+ 
+@@ -993,6 +1000,7 @@ module type Optcommon_options = sig
+   val _no_insn_sched : unit -> unit
+   val _linscan : unit -> unit
+   val _whole_program_rebuild : unit -> unit
++  val _lto_inline : unit -> unit
+   val _no_float_const_prop : unit -> unit
+ 
+   val _clambda_checks : unit -> unit
+@@ -1287,6 +1295,7 @@ struct
+     mk_clambda_checks F._clambda_checks;
+     mk_classic_inlining F._classic_inlining;
+     mk_whole_program_rebuild F._whole_program_rebuild;
++    mk_lto_inline F._lto_inline;
+     mk_color F._color;
+     mk_error_style F._error_style;
+     mk_compact F._compact;
+@@ -1728,6 +1737,7 @@ module Default = struct
+       if not Config.flambda then
+         Compenv.fatal "-use-lto is only supported by the flambda compiler";
+       whole_program_rebuild := true
++    let _lto_inline () = lto_inline := true
+     let _compact = clear optimize_for_speed
+     let _dalloc = set dump_regalloc
+     let _dclambda = set dump_clambda
+diff --git a/driver/main_args.mli b/driver/main_args.mli
+index 986adeb2ea..0ae5d5ce65 100644
+--- a/driver/main_args.mli
++++ b/driver/main_args.mli
+@@ -206,6 +206,7 @@ module type Optcommon_options = sig
+   val _no_insn_sched : unit -> unit
+   val _linscan : unit -> unit
+   val _whole_program_rebuild : unit -> unit
++  val _lto_inline : unit -> unit
+   val _no_float_const_prop : unit -> unit
+ 
+   val _clambda_checks : unit -> unit
+diff --git a/utils/clflags.ml b/utils/clflags.ml
+index 5c00b8e1cb..80f758cad7 100644
+--- a/utils/clflags.ml
++++ b/utils/clflags.ml
+@@ -191,6 +191,7 @@ let afl_inst_ratio = ref 100           (* -afl-inst-ratio *)
+ let whole_program_rebuild = ref false  (* -use-lto *)
+ let dump_lto_dce = ref false           (* -dlto-dce *)
+ let lto_why_live = ref (None : string option) (* -dlto-why-live *)
++let lto_inline = ref false             (* -lto-inline *)
+ 
+ let function_sections = ref Config.function_sections
+                                         (* -function-sections *)
+diff --git a/utils/clflags.mli b/utils/clflags.mli
+index db57911479..69a56d5b96 100644
+--- a/utils/clflags.mli
++++ b/utils/clflags.mli
+@@ -222,6 +222,7 @@ val function_sections : bool ref
+ val whole_program_rebuild : bool ref
+ val dump_lto_dce : bool ref
+ val lto_why_live : string option ref
++val lto_inline : bool ref
+ 
+ val all_passes : string list ref
+ val dumped_pass : string -> bool
+-- 
+2.55.0
+

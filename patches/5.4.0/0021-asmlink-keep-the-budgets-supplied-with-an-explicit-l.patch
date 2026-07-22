@@ -1,0 +1,44 @@
+From 74ebac57b6055ee7508ab35c4cda85162b67a4f6 Mon Sep 17 00:00:00 2001
+From: Thomas Gazagnaire <thomas@gazagnaire.org>
+Date: Wed, 22 Jul 2026 12:57:18 -0700
+Subject: [PATCH] asmlink: keep the budgets supplied with an explicit
+ -lto-inline
+
+The zero-budget cleanup rounds wrapped every non-specialising -use-lto
+link, including one where the user passed -lto-inline together with
+explicit budgets (-O3, -inline): auto-specialisation declines such a
+link, so the wrapper zeroed exactly the budgets the flag promises to
+honour, and -lto-inline became indistinguishable from the default link.
+An explicit request now runs the cleanup with the caller's parameters
+untouched.
+
+Two tests pin the flag's contract: lto_inline_budget checks that a
+function compiled with a zero per-unit budget and called at two sites
+(so the single-use collapse cannot touch it) is inlined away by the
+budgets given at the link; lto_growth_guard checks the interaction with
+the inlining-stage guard, whose message must still fire when the
+requested budgets grow the program past the allowance, keeping the
+cleanups while discarding the growth.
+---
+ asmcomp/asmlink.ml | 5 ++++-
+ 1 file changed, 4 insertions(+), 1 deletion(-)
+
+diff --git a/asmcomp/asmlink.ml b/asmcomp/asmlink.ml
+index e87aaa9219..b1a202ea39 100644
+--- a/asmcomp/asmlink.ml
++++ b/asmcomp/asmlink.ml
+@@ -1311,7 +1311,10 @@ let link_whole_program ~backend ~ppf_dump ~crc_interfaces units_to_link =
+         sites >= 1 && sites <= format_specialise_max_sites)
+   in
+   let with_specialise_budgets f =
+-    if not auto_specialise then begin
++    if !Clflags.lto_inline then
++      (* An explicit request keeps the budgets supplied by the user. *)
++      f ()
++    else if not auto_specialise then begin
+       (* Even without format specialisation, the cleanup rounds run with the
+          inliner enabled and every budget at zero: the only decisions that
+          fire below the thresholds are collapsing a function into its single
+-- 
+2.55.0
+

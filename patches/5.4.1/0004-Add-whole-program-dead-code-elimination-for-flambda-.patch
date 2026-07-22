@@ -1,24 +1,52 @@
-From 60387508093611b60137aa67dfad7eb95ea16192 Mon Sep 17 00:00:00 2001
+From 13436519ab3c19cb70da42ccbf8114dcf7030866 Mon Sep 17 00:00:00 2001
 From: Thomas Gazagnaire <thomas@gazagnaire.org>
-Date: Thu, 9 Jul 2026 11:18:10 -0700
-Subject: [PATCH] lto
+Date: Mon, 20 Jul 2026 10:51:36 -0700
+Subject: [PATCH] Add whole-program dead code elimination for flambda
+ (-use-lto)
 
+A compiler configured with the new --enable-lto option
+(Config.cmx_contains_all_code) stores each unit's full flambda program
+in the .cmx files it produces.  Linking with -use-lto concatenates
+every unit's code into one flambda program, re-runs the middle end
+over it, and drops the functions nothing reaches.  Static binaries in
+the unikernel style shed most of the code that per-unit compilation
+must conservatively keep.
+
+The link needs every unit's body, so a .cmx without stored code (from
+a compiler configured without LTO, or from -opaque, below) cannot take
+part and the link reports it.  Compiling with -use-lto requests the
+advance notice: new warning 76 (module-compiled-without-lto, named
+after its constructor as the mnemonics test requires) reports required
+modules whose .cmx lacks a body.  The warning is confined to -use-lto
+compilations because a code-less dependency is fully legitimate
+otherwise: emitted unconditionally, it turned every -a archive over
+-opaque members into a hard error under -warn-error.
+
+-opaque units store no code even under --enable-lto: -opaque promises
+that a unit's cmx digest depends only on what dependents may assume,
+so recompiling the same source elsewhere must digest identically and
+stay swappable at link time (testsuite/tests/opaque); stored code
+embeds source paths through its debug info and would break that
+contract.
+
+Based on Pierre Chambart's whole-program dead code elimination
+prototype (ocaml/ocaml#608), rebased onto 5.4.1 and extended with the
+cmx code store, the configure and warning plumbing, and -pack support.
 ---
  asmcomp/asmgen.mli                            |   6 +
- asmcomp/asmlibrarian.ml                       |  22 ++-
+ asmcomp/asmlibrarian.ml                       |  28 ++-
  asmcomp/asmlink.ml                            | 165 ++++++++++++++++--
  asmcomp/asmlink.mli                           |   5 +-
  asmcomp/asmpackager.ml                        |  60 ++++++-
  asmcomp/asmpackager.mli                       |   1 +
- configure                                     |  17 ++
  configure.ac                                  |   9 +
  driver/compenv.ml                             |   2 +
  driver/main_args.ml                           |  11 ++
  driver/main_args.mli                          |   1 +
  driver/optmaindriver.ml                       |   2 +-
  dune                                          |   2 +-
- middle_end/compilenv.ml                       |  18 ++
- middle_end/flambda/build_export_info.ml       |  15 +-
+ middle_end/compilenv.ml                       |  23 +++
+ middle_end/flambda/build_export_info.ml       |  18 +-
  middle_end/flambda/closure_conversion.ml      |   2 +-
  middle_end/flambda/export_info.ml             |  16 +-
  middle_end/flambda/export_info.mli            |  10 ++
@@ -39,11 +67,6 @@ Subject: [PATCH] lto
  otherlibs/Makefile.otherlibs.common           |   3 +-
  otherlibs/systhreads/Makefile                 |   2 +-
  stdlib/Makefile                               |   2 +-
- testsuite/tests/pack-and-lto/Makefile         |  22 +++
- testsuite/tests/pack-and-lto/package/a.ml     |   2 +
- testsuite/tests/pack-and-lto/package/b.ml     |   2 +
- testsuite/tests/pack-and-lto/test.ml          |   3 +
- testsuite/tests/pack-and-lto/test.reference   |   5 +
  tools/objinfo.ml                              |   8 +-
  utils/clflags.ml                              |   1 +
  utils/clflags.mli                             |   1 +
@@ -53,12 +76,7 @@ Subject: [PATCH] lto
  utils/config.mli                              |   3 +
  utils/warnings.ml                             |  15 +-
  utils/warnings.mli                            |   1 +
- 49 files changed, 591 insertions(+), 86 deletions(-)
- create mode 100644 testsuite/tests/pack-and-lto/Makefile
- create mode 100644 testsuite/tests/pack-and-lto/package/a.ml
- create mode 100644 testsuite/tests/pack-and-lto/package/b.ml
- create mode 100644 testsuite/tests/pack-and-lto/test.ml
- create mode 100644 testsuite/tests/pack-and-lto/test.reference
+ 43 files changed, 554 insertions(+), 86 deletions(-)
 
 diff --git a/asmcomp/asmgen.mli b/asmcomp/asmgen.mli
 index b43d38559d..6c5a79813d 100644
@@ -78,7 +96,7 @@ index b43d38559d..6c5a79813d 100644
      ppf_dump:Format.formatter -> Cmm.phrase -> unit
  
 diff --git a/asmcomp/asmlibrarian.ml b/asmcomp/asmlibrarian.ml
-index 823b07db3a..74be0eaf12 100644
+index 823b07db3a..26b7523a65 100644
 --- a/asmcomp/asmlibrarian.ml
 +++ b/asmcomp/asmlibrarian.ml
 @@ -26,12 +26,6 @@ type error =
@@ -94,7 +112,7 @@ index 823b07db3a..74be0eaf12 100644
  let read_info name =
    let filename =
      try
-@@ -44,7 +38,21 @@ let read_info name =
+@@ -44,7 +38,27 @@ let read_info name =
       since the compiler will go looking directly for .cmx files.
       The linker, which is the only one that reads .cmxa files, does not
       need the approximation. *)
@@ -103,7 +121,13 @@ index 823b07db3a..74be0eaf12 100644
 +    match info.ui_export_info with
 +    | Flambda export_info ->
 +        if Config.cmx_contains_all_code then begin
-+          if export_info.Export_info.code = None then
++          (* As in [Compilenv.write_unit_info]: a code-less member (an
++             -opaque unit, e.g. every dev-profile compile under dune) is
++             fully legitimate unless this archive step is itself part of a
++             -use-lto build; emitted unconditionally, the warning turned
++             every dev cmxa into a hard error under -warn-error. *)
++          if export_info.Export_info.code = None
++             && !Clflags.whole_program_rebuild then
 +            Location.prerr_warning Location.none
 +              (Warnings.Module_compiled_without_lto info.ui_name);
 +          Cmx_format.Flambda
@@ -469,96 +493,6 @@ index 39508cec63..65a0099040 100644
  
  exception Error of error
  
-diff --git a/configure b/configure
-index a6e656668d..ec52f00c21 100755
---- a/configure
-+++ b/configure
-@@ -815,6 +815,7 @@ windows_unicode
- cmm_invariants
- flambda_invariants
- flambda
-+lto
- frame_pointers
- reserved_header_bits
- install_ocamlnat
-@@ -1028,6 +1029,7 @@ enable_installing_bytecode_programs
- enable_native_compiler
- enable_flambda
- enable_flambda_invariants
-+enable_lto
- enable_cmm_invariants
- with_target_sh
- enable_reserved_header_bits
-@@ -1733,6 +1735,7 @@ Optional Features:
-   --enable-flambda        enable flambda optimizations
-   --enable-flambda-invariants
-                           enable invariants checks in flambda
-+  --enable-lto            enable linking time optimizations
-   --enable-cmm-invariants enable invariants checks in Cmm
-   --enable-reserved-header-bits=BITS
-                           reserve BITS (between 0 and 31) bits in block
-@@ -4175,6 +4178,13 @@ then :
- fi
- 
- 
-+# Check whether --enable-lto was given.
-+if test ${enable_lto+y}
-+then :
-+  enableval=$enable_lto;
-+fi
-+
-+
- # Check whether --enable-cmm-invariants was given.
- if test ${enable_cmm_invariants+y}
- then :
-@@ -23502,6 +23512,13 @@ else $as_nop
-   flambda_invariants=false
- fi
- 
-+if test x"$enable_lto" = "xyes"
-+then :
-+  lto=true
-+else $as_nop
-+  lto=false
-+fi
-+
- if $flambda
- then :
-   CMX_MAGIC_NUMBER=Caml1999y036
-diff --git a/configure.ac b/configure.ac
-index 601f6d4b57..3f5fd626ca 100644
---- a/configure.ac
-+++ b/configure.ac
-@@ -247,6 +247,7 @@ AC_SUBST([reserved_header_bits])
- AC_SUBST([frame_pointers])
- AC_SUBST([flambda])
- AC_SUBST([flambda_invariants])
-+AC_SUBST([lto])
- AC_SUBST([cmm_invariants])
- AC_SUBST([windows_unicode])
- AC_SUBST([align_double])
-@@ -555,6 +556,10 @@ AC_ARG_ENABLE([flambda-invariants],
-   [AS_HELP_STRING([--enable-flambda-invariants],
-     [enable invariants checks in flambda])])
- 
-+AC_ARG_ENABLE([lto],
-+  [AS_HELP_STRING([--enable-lto],
-+    [enable linking time optimizations])])
-+
- AC_ARG_ENABLE([cmm-invariants],
-   [AS_HELP_STRING([--enable-cmm-invariants],
-     [enable invariants checks in Cmm])])
-@@ -2748,6 +2753,10 @@ AS_IF([test x"$enable_flambda" = "xyes"],
-   [flambda=false
-   flambda_invariants=false])
- 
-+AS_IF([test x"$enable_lto" = "xyes"],
-+  [lto=true],
-+  [lto=false])
-+
- AS_IF([$flambda],
-   [CMX_MAGIC_NUMBER=CMX_FLAMBDA__MAGIC_NUMBER
-   CMXA_MAGIC_NUMBER=CMXA_FLAMBDA__MAGIC_NUMBER],
 diff --git a/driver/compenv.ml b/driver/compenv.ml
 index 3fb7ad770a..2ceb41a3c4 100644
 --- a/driver/compenv.ml
@@ -654,10 +588,10 @@ index dbe8af9ed9..9a05abfa09 100644
   (modules optmain))
  
 diff --git a/middle_end/compilenv.ml b/middle_end/compilenv.ml
-index 231abfc194..9476f9af18 100644
+index 231abfc194..b39ee453ab 100644
 --- a/middle_end/compilenv.ml
 +++ b/middle_end/compilenv.ml
-@@ -348,9 +348,27 @@ let need_send_fun n =
+@@ -348,9 +348,32 @@ let need_send_fun n =
    if not (List.mem n current_unit.ui_send_fun) then
      current_unit.ui_send_fun <- n :: current_unit.ui_send_fun
  
@@ -680,31 +614,39 @@ index 231abfc194..9476f9af18 100644
  (* Write the description of the current unit *)
  
  let write_unit_info info filename =
-+  if Config.flambda && Config.cmx_contains_all_code then
++  (* Only worth reporting when this compilation is itself heading for a
++     -use-lto link: a code-less dependency (an -opaque module) is fully
++     legitimate otherwise, and the whole-program link has its own error for
++     the case that matters. *)
++  if Config.flambda && Config.cmx_contains_all_code
++     && !Clflags.whole_program_rebuild then
 +    check_required_modules_are_compiled_with_lto ();
    let oc = open_out_bin filename in
    output_string oc cmx_magic_number;
    output_value oc info;
 diff --git a/middle_end/flambda/build_export_info.ml b/middle_end/flambda/build_export_info.ml
-index 89dcc3beca..48b51f500e 100644
+index 89dcc3beca..dc9d787d49 100644
 --- a/middle_end/flambda/build_export_info.ml
 +++ b/middle_end/flambda/build_export_info.ml
-@@ -524,7 +524,13 @@ let build_transient ~(backend : (module Backend_intf.S))
+@@ -524,7 +524,16 @@ let build_transient ~(backend : (module Backend_intf.S))
    if !Clflags.opaque then
      let compilation_unit = Compilenv.current_unit () in
      let root_symbol = Compilenv.current_unit_symbol () in
 -    Export_info.opaque_transient ~root_symbol ~compilation_unit
-+    let code =
-+      if Config.cmx_contains_all_code then
-+        Some program
-+      else
-+        None
-+    in
-+    Export_info.opaque_transient ~root_symbol ~compilation_unit ~code
++    (* No code is stored for an -opaque unit, even when the compiler is
++       configured to store it.  -opaque promises that the cmx digest depends
++       only on what dependents may assume, so recompiling the same source in
++       another directory must produce an identical digest and remain
++       swappable at link time (testsuite/tests/opaque); stored code embeds
++       source paths through its debug info and breaks that.  Such a unit
++       consequently cannot take part in a -use-lto link, which the link
++       reports (Module_compiled_without_lto), and dependents warn at compile
++       time (warning 76). *)
++    Export_info.opaque_transient ~root_symbol ~compilation_unit ~code:None
    else
      (* CR-soon pchambart: Should probably use that instead of the ident of
         the module as global identifier.
-@@ -703,6 +709,12 @@ let build_transient ~(backend : (module Backend_intf.S))
+@@ -703,6 +712,12 @@ let build_transient ~(backend : (module Backend_intf.S))
          (fun key _ -> Symbol.Set.mem key relevant_symbols)
          symbol_id
      in
@@ -717,7 +659,7 @@ index 89dcc3beca..48b51f500e 100644
      Export_info.create_transient ~values
        ~symbol_id
        ~sets_of_closures
-@@ -712,3 +724,4 @@ let build_transient ~(backend : (module Backend_intf.S))
+@@ -712,3 +727,4 @@ let build_transient ~(backend : (module Backend_intf.S))
        ~relevant_imported_closure_ids
        ~relevant_local_vars_within_closure
        ~relevant_imported_vars_within_closure
@@ -1377,70 +1319,6 @@ index a7f2e60a7a..d161a483e7 100644
  
  .PHONY: distclean
  distclean: clean
-diff --git a/testsuite/tests/pack-and-lto/Makefile b/testsuite/tests/pack-and-lto/Makefile
-new file mode 100644
-index 0000000000..9bcbae8a9a
---- /dev/null
-+++ b/testsuite/tests/pack-and-lto/Makefile
-@@ -0,0 +1,22 @@
-+default: native
-+
-+native:
-+	printf " ... testing native 'test.reference':"
-+	@$(OCAMLOPT) -c -for-pack Pack package/a.ml
-+	@$(OCAMLOPT) -c -for-pack Pack package/b.ml
-+	@$(OCAMLOPT) -pack package/a.cmx package/b.cmx -o pack.cmx
-+	@$(OCAMLOPT) -c test.ml
-+	@$(OCAMLOPT) pack.cmx test.cmx -o test.native
-+	@./test.native > test.result
-+	@$(DIFF) test.result test.reference >/dev/null \
-+	    && echo " => passed" || echo " => failed"
-+
-+promote: defaultpromote
-+
-+clean: defaultclean
-+	@rm -f *.result
-+	@rm -f test.native
-+
-+BASEDIR=../..
-+include $(BASEDIR)/makefiles/Makefile.common
-+COMPFLAGS =
-diff --git a/testsuite/tests/pack-and-lto/package/a.ml b/testsuite/tests/pack-and-lto/package/a.ml
-new file mode 100644
-index 0000000000..586c46e896
---- /dev/null
-+++ b/testsuite/tests/pack-and-lto/package/a.ml
-@@ -0,0 +1,2 @@
-+let a () = print_endline "ok a" [@@inline never]
-+let () = print_endline "A entry"
-diff --git a/testsuite/tests/pack-and-lto/package/b.ml b/testsuite/tests/pack-and-lto/package/b.ml
-new file mode 100644
-index 0000000000..6a3f079402
---- /dev/null
-+++ b/testsuite/tests/pack-and-lto/package/b.ml
-@@ -0,0 +1,2 @@
-+let b () = print_endline "ok b" [@@inline never]
-+let () = print_endline "B entry"
-diff --git a/testsuite/tests/pack-and-lto/test.ml b/testsuite/tests/pack-and-lto/test.ml
-new file mode 100644
-index 0000000000..69a857fae8
---- /dev/null
-+++ b/testsuite/tests/pack-and-lto/test.ml
-@@ -0,0 +1,3 @@
-+let () = print_endline "Test entry"
-+let () = Pack.B.b ()
-+let () = Pack.A.a ()
-diff --git a/testsuite/tests/pack-and-lto/test.reference b/testsuite/tests/pack-and-lto/test.reference
-new file mode 100644
-index 0000000000..eee942d4bf
---- /dev/null
-+++ b/testsuite/tests/pack-and-lto/test.reference
-@@ -0,0 +1,5 @@
-+A entry
-+B entry
-+Test entry
-+ok b
-+ok a
 diff --git a/tools/objinfo.ml b/tools/objinfo.ml
 index 83e3659314..39a8ff0962 100644
 --- a/tools/objinfo.ml
@@ -1535,7 +1413,7 @@ index 3e61d6e66b..e8c999b160 100644
  (** Whether ar supports @FILE arguments. *)
  
 diff --git a/utils/warnings.ml b/utils/warnings.ml
-index fa58cb3fc0..4d857c669d 100644
+index fa58cb3fc0..588bc80d0b 100644
 --- a/utils/warnings.ml
 +++ b/utils/warnings.ml
 @@ -115,6 +115,7 @@ type t =
@@ -1566,7 +1444,7 @@ index fa58cb3fc0..4d857c669d 100644
                     type.";
      since = since 5 4 };
 +  { number = 76;
-+    names = ["module-without-lto"];
++    names = ["module-compiled-without-lto"];
 +    description = "Dependency on a module compiled without -lto.";
 +    since = since 5 4 };
  ]
@@ -1598,3 +1476,94 @@ index 5a19781703..3b14da1a96 100644
  
  type alert = {kind:string; message:string; def:loc; use:loc}
  
+diff --git a/configure b/configure
+--- a/configure
++++ b/configure
+@@ -815,6 +815,7 @@
+ cmm_invariants
+ flambda_invariants
+ flambda
++lto
+ frame_pointers
+ reserved_header_bits
+ install_ocamlnat
+@@ -1028,6 +1029,7 @@
+ enable_native_compiler
+ enable_flambda
+ enable_flambda_invariants
++enable_lto
+ enable_cmm_invariants
+ with_target_sh
+ enable_reserved_header_bits
+@@ -1733,6 +1735,7 @@
+   --enable-flambda        enable flambda optimizations
+   --enable-flambda-invariants
+                           enable invariants checks in flambda
++  --enable-lto            enable linking time optimizations
+   --enable-cmm-invariants enable invariants checks in Cmm
+   --enable-reserved-header-bits=BITS
+                           reserve BITS (between 0 and 31) bits in block
+@@ -4175,6 +4178,13 @@
+ fi
+ 
+ 
++# Check whether --enable-lto was given.
++if test ${enable_lto+y}
++then :
++  enableval=$enable_lto;
++fi
++
++
+ # Check whether --enable-cmm-invariants was given.
+ if test ${enable_cmm_invariants+y}
+ then :
+@@ -23500,6 +23510,13 @@
+ else $as_nop
+   flambda=false
+   flambda_invariants=false
++fi
++
++if test x"$enable_lto" = "xyes"
++then :
++  lto=true
++else $as_nop
++  lto=false
+ fi
+ 
+ if $flambda
+diff --git a/configure.ac b/configure.ac
+--- a/configure.ac
++++ b/configure.ac
+@@ -247,6 +247,7 @@
+ AC_SUBST([frame_pointers])
+ AC_SUBST([flambda])
+ AC_SUBST([flambda_invariants])
++AC_SUBST([lto])
+ AC_SUBST([cmm_invariants])
+ AC_SUBST([windows_unicode])
+ AC_SUBST([align_double])
+@@ -555,6 +556,10 @@
+   [AS_HELP_STRING([--enable-flambda-invariants],
+     [enable invariants checks in flambda])])
+ 
++AC_ARG_ENABLE([lto],
++  [AS_HELP_STRING([--enable-lto],
++    [enable linking time optimizations])])
++
+ AC_ARG_ENABLE([cmm-invariants],
+   [AS_HELP_STRING([--enable-cmm-invariants],
+     [enable invariants checks in Cmm])])
+@@ -2748,6 +2753,10 @@
+   [flambda=false
+   flambda_invariants=false])
+ 
++AS_IF([test x"$enable_lto" = "xyes"],
++  [lto=true],
++  [lto=false])
++
+ AS_IF([$flambda],
+   [CMX_MAGIC_NUMBER=CMX_FLAMBDA__MAGIC_NUMBER
+   CMXA_MAGIC_NUMBER=CMXA_FLAMBDA__MAGIC_NUMBER],
+-- 
+2.55.0
+

@@ -1,4 +1,4 @@
-From 6d1fb28535738b10b99227a21303c2d2a48890b9 Mon Sep 17 00:00:00 2001
+From 366f5e71ac3964973d710d18e19e6f7bb9ec92dc Mon Sep 17 00:00:00 2001
 From: Thomas Gazagnaire <thomas@gazagnaire.org>
 Date: Sun, 12 Jul 2026 15:40:00 -0700
 Subject: [PATCH] Default -function-sections to the configured support

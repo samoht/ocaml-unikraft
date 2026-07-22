@@ -1,0 +1,69 @@
+From d6e7ddb1b5f679ee476cf82c09a79b3eac2fa752 Mon Sep 17 00:00:00 2001
+From: Thomas Gazagnaire <thomas@gazagnaire.org>
+Date: Mon, 20 Jul 2026 13:16:44 -0700
+Subject: [PATCH] asmlink: run the -use-lto cleanup rounds with zero-budget
+ inlining
+
+The cleanup previously disabled the inliner outright unless -lto-inline
+or the format specialisation asked for it.  Run it instead with every
+threshold forced to zero: below the thresholds the only decisions that
+can fire are collapsing a function into its single known call site
+(size-neutral, since the original dies with its one use) and whatever
+constant folding that exposes.  All reference outputs are unchanged, and
+an explicit [@inline never] still wins over the single-use heuristic.
+
+This is groundwork rather than a measured win: at the link, a
+module-exported function never qualifies as single-use because the
+module block's reference to its closure hides the use count, so a
+backend wrapper chain called once with a literal device list is still
+not folded.  Making the use count field-aware -- one Apply through one
+otherwise-unused block field is a single use -- is the follow-up that
+would let a literal argument at the program's only entry drive dead-code
+elimination through such chains.
+---
+ asmcomp/asmlink.ml | 22 ++++++++++++++++++++--
+ 1 file changed, 20 insertions(+), 2 deletions(-)
+
+diff --git a/asmcomp/asmlink.ml b/asmcomp/asmlink.ml
+index 2f2fe6b626..7f2af0accc 100644
+--- a/asmcomp/asmlink.ml
++++ b/asmcomp/asmlink.ml
+@@ -1139,7 +1139,25 @@ let link_whole_program ~backend ~ppf_dump ~crc_interfaces units_to_link =
+         sites >= 1 && sites <= format_specialise_max_sites)
+   in
+   let with_specialise_budgets f =
+-    if not auto_specialise then f ()
++    if not auto_specialise then begin
++      (* Even without format specialisation, the cleanup rounds run with the
++         inliner enabled and every budget at zero: the only decisions that
++         fire below the thresholds are collapsing a function into its single
++         reachable call site (size-neutral: the original dies with its one
++         use) and what constant folding then exposes.  A device list that is
++         a literal at the program's only entry thus folds through the
++         backend's wrapper chain, and the branches it kills take their
++         cones with them. *)
++      let r x = Misc.R (x, !x) in
++      Misc.protect_refs
++        [ r Clflags.inline_threshold; r Clflags.inline_toplevel_threshold ]
++        (fun () ->
++          Clflags.Float_arg_helper.parse "0"
++            "single-use collapse" Clflags.inline_threshold;
++          Clflags.Int_arg_helper.parse "0"
++            "single-use collapse" Clflags.inline_toplevel_threshold;
++          f ())
++    end
+     else begin
+       let r x = Misc.R (x, !x) in
+       Misc.protect_refs
+@@ -1183,7 +1201,7 @@ let link_whole_program ~backend ~ppf_dump ~crc_interfaces units_to_link =
+          itself is collected -- a large win on small images -- but its
+          speed-oriented duplication grows large programs. *)
+       Inline_and_simplify.run
+-        ~never_inline:(not (!Clflags.lto_inline || auto_specialise))
++        ~never_inline:false
+         ~ppf_dump
+         ~backend
+         ~prefixname:"_link_"
+-- 
+2.55.0
+

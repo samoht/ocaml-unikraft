@@ -1,0 +1,75 @@
+From da7c0f81981f1d3b4f33545ca5a67414c2fd7eee Mon Sep 17 00:00:00 2001
+From: Thomas Gazagnaire <thomas@gazagnaire.org>
+Date: Mon, 20 Jul 2026 10:52:14 -0700
+Subject: [PATCH] asmlink: run the -use-lto cleanup to a fixpoint, with
+ unused-closure-vars
+
+The whole-program cleanup ran a single round of
+Remove_unused_program_constructs followed by one non-inlining simplification,
+but eliminating a function can drop the last reference to another symbol that
+the initial round already decided to keep.  Repeat the round until the
+function count stops shrinking, and include Remove_unused_closure_vars in
+each round (plus a final surrogate-removing application before lifting), as
+the per-unit middle end does: at whole-program scope an unused closure
+variable can be the only thing keeping a function alive.
+
+The win is modest where the single round was already at its fixpoint (a few
+functions and a few hundred text bytes on an ocamlc-sized link) but the
+cleanup is no longer order-dependent, and each future improvement to any one
+pass now composes with the others instead of stopping after one round.
+---
+ asmcomp/asmlink.ml | 36 +++++++++++++++++++++++++++---------
+ 1 file changed, 27 insertions(+), 9 deletions(-)
+
+diff --git a/asmcomp/asmlink.ml b/asmcomp/asmlink.ml
+index c6495e7156..d547a3b980 100644
+--- a/asmcomp/asmlink.ml
++++ b/asmcomp/asmlink.ml
+@@ -599,17 +599,35 @@ let link_whole_program ~backend ~ppf_dump ~crc_interfaces units_to_link =
+   if !Clflags.dump_rawflambda then
+     Format.fprintf ppf_dump "After concatenation:@ %a@."
+       Flambda.print_program program;
+-  let cleaned_program =
+-    Remove_unused_program_constructs.remove_unused_program_constructs program
++  (* Iterate the cleanup to a fixpoint: eliminating a function or an unused
++     closure variable can drop the last reference to another symbol, so each
++     round can expose more dead code.  Terminates because a further round is
++     only attempted while the function count strictly shrinks. *)
++  let rec clean program =
++    let count = (program_stats program).fun_count in
++    let program =
++      Remove_unused_program_constructs.remove_unused_program_constructs program
++    in
++    let program =
++      Remove_unused_closure_vars.remove_unused_closure_variables
++        ~remove_direct_call_surrogates:false program
++    in
++    let program =
++      Inline_and_simplify.run
++        ~never_inline:true
++        ~ppf_dump
++        ~backend
++        ~prefixname:"_link_"
++        ~round:0
++        program
++    in
++    if (program_stats program).fun_count < count then clean program
++    else program
+   in
++  let cleaned_program = clean program in
+   let cleaned_program =
+-    Inline_and_simplify.run
+-      ~never_inline:true
+-      ~ppf_dump
+-      ~backend
+-      ~prefixname:"_link_"
+-      ~round:0
+-      cleaned_program
++    Remove_unused_closure_vars.remove_unused_closure_variables
++      ~remove_direct_call_surrogates:true cleaned_program
+   in
+   let cleaned_program = Lift_constants.lift_constants ~backend cleaned_program in
+   let cleaned_program = Share_constants.share_constants cleaned_program in
+-- 
+2.55.0
+

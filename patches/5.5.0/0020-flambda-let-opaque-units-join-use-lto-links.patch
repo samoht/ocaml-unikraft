@@ -1,0 +1,166 @@
+From ad82395afd9af1053f46a64b3da471558ea63749 Mon Sep 17 00:00:00 2001
+From: Thomas Gazagnaire <thomas@gazagnaire.org>
+Date: Wed, 22 Jul 2026 12:58:11 -0700
+Subject: [PATCH] flambda: let -opaque units join -use-lto links
+
+An -opaque unit stored no whole-program body, so it could not take part
+in a -use-lto link.  That exclusion looked like a corner case and is
+not: dune compiles its dev profile with -opaque throughout, and passes
+it deliberately for modules generated at link time (Build_info_data),
+so any dune-built project was shut out of LTO precisely where it is
+built most often.
+
+The body was withheld to keep -opaque's contract: the cmx digest must
+depend only on what dependents may assume, so byte-identical sources
+compiled in different directories digest identically and their
+implementations stay swappable at link time (testsuite/tests/opaque) --
+whereas a stored body embeds source paths through its debug info.
+Store the body anyway, and keep the promise in the digest instead:
+an -opaque unit's digest is now computed over its unit information
+with the code field cleared, exactly what the code-free compilation
+used to write, while the linker reads the full information and can
+consume the body.  Ordinary dependents still receive no approximation,
+so -opaque keeps inhibiting cross-module optimisation as documented.
+
+The warning-76 comments in asmlibrarian and compilenv stop citing
+-opaque as their example: a code-less member now indicates a compiler
+that does not store code at all.  lto_opaque tests the dune shape, an
+-opaque library consumed by a -use-lto link, and pins with -warn-error
++a that archiving an -opaque member into a .cmxa stays silent, with
+and without -use-lto.
+---
+ asmcomp/asmlibrarian.ml                 |  9 ++++----
+ middle_end/compilenv.ml                 | 28 +++++++++++++++++++++----
+ middle_end/flambda/build_export_info.ml | 20 +++++++++---------
+ middle_end/flambda/export_info.ml       |  2 ++
+ middle_end/flambda/export_info.mli      |  4 ++++
+ 5 files changed, 44 insertions(+), 19 deletions(-)
+
+diff --git a/asmcomp/asmlibrarian.ml b/asmcomp/asmlibrarian.ml
+index 26b7523a65..5a8b4b3cf9 100644
+--- a/asmcomp/asmlibrarian.ml
++++ b/asmcomp/asmlibrarian.ml
+@@ -42,11 +42,10 @@ let read_info name =
+     match info.ui_export_info with
+     | Flambda export_info ->
+         if Config.cmx_contains_all_code then begin
+-          (* As in [Compilenv.write_unit_info]: a code-less member (an
+-             -opaque unit, e.g. every dev-profile compile under dune) is
+-             fully legitimate unless this archive step is itself part of a
+-             -use-lto build; emitted unconditionally, the warning turned
+-             every dev cmxa into a hard error under -warn-error. *)
++          (* As in [Compilenv.write_unit_info]: a member from a compiler that
++             did not store its code is fully legitimate unless this archive
++             step is itself part of a -use-lto build; emitted unconditionally,
++             the warning can become a hard error under [-warn-error]. *)
+           if export_info.Export_info.code = None
+              && !Clflags.whole_program_rebuild then
+             Location.prerr_warning Location.none
+diff --git a/middle_end/compilenv.ml b/middle_end/compilenv.ml
+index d85418b739..153ab03e1c 100644
+--- a/middle_end/compilenv.ml
++++ b/middle_end/compilenv.ml
+@@ -380,9 +380,9 @@ let check_required_modules_are_compiled_with_lto () =
+ 
+ let write_unit_info info filename =
+   (* Only worth reporting when this compilation is itself heading for a
+-     -use-lto link: a code-less dependency (an -opaque module) is fully
+-     legitimate otherwise, and the whole-program link has its own error for
+-     the case that matters. *)
++     -use-lto link: a dependency from a compiler that did not store its code
++     is fully legitimate otherwise, and the whole-program link has its own
++     error for the case that matters. *)
+   if Config.flambda && Config.cmx_contains_all_code
+      && !Clflags.whole_program_rebuild then
+     check_required_modules_are_compiled_with_lto ();
+@@ -390,7 +390,27 @@ let write_unit_info info filename =
+   output_string oc cmx_magic_number;
+   output_value oc info;
+   flush oc;
+-  let crc = Digest.BLAKE128.file filename in
++  let crc =
++    if Config.flambda && Config.cmx_contains_all_code && !Clflags.opaque then
++      (* [-opaque] promises that dependents may interchange implementations
++         with the same interface.  Keep that promise while storing an LTO
++         body in the file: its dependency digest is exactly the digest of the
++         code-free unit information that older opaque compilation produced.
++         The linker reads the real [info] above and can still consume its
++         whole-program body. *)
++      let digest_info =
++        match info.ui_export_info with
++        | Flambda export_info ->
++            { info with
++              ui_export_info =
++                Flambda (Export_info.without_code export_info) }
++        | Clambda _ -> assert false
++      in
++      Digest.BLAKE128.string
++        (cmx_magic_number ^ Marshal.to_string digest_info [])
++    else
++      Digest.BLAKE128.file filename
++  in
+   Digest.BLAKE128.output oc crc;
+   close_out oc
+ 
+diff --git a/middle_end/flambda/build_export_info.ml b/middle_end/flambda/build_export_info.ml
+index dc9d787d49..bc64b35605 100644
+--- a/middle_end/flambda/build_export_info.ml
++++ b/middle_end/flambda/build_export_info.ml
+@@ -524,16 +524,16 @@ let build_transient ~(backend : (module Backend_intf.S))
+   if !Clflags.opaque then
+     let compilation_unit = Compilenv.current_unit () in
+     let root_symbol = Compilenv.current_unit_symbol () in
+-    (* No code is stored for an -opaque unit, even when the compiler is
+-       configured to store it.  -opaque promises that the cmx digest depends
+-       only on what dependents may assume, so recompiling the same source in
+-       another directory must produce an identical digest and remain
+-       swappable at link time (testsuite/tests/opaque); stored code embeds
+-       source paths through its debug info and breaks that.  Such a unit
+-       consequently cannot take part in a -use-lto link, which the link
+-       reports (Module_compiled_without_lto), and dependents warn at compile
+-       time (warning 76). *)
+-    Export_info.opaque_transient ~root_symbol ~compilation_unit ~code:None
++    (* Ordinary dependents still receive no approximation for an [-opaque]
++       unit.  An LTO-enabled compiler nevertheless stores its body so that
++       generated-at-link modules (which dune deliberately compiles opaque)
++       can take part in [-use-lto].  [Compilenv.write_unit_info] excludes this
++       body from the unit digest, preserving opaque-module interchangeability
++       and path-independent dependency digests. *)
++    let code =
++      if Config.cmx_contains_all_code then Some program else None
++    in
++    Export_info.opaque_transient ~root_symbol ~compilation_unit ~code
+   else
+     (* CR-soon pchambart: Should probably use that instead of the ident of
+        the module as global identifier.
+diff --git a/middle_end/flambda/export_info.ml b/middle_end/flambda/export_info.ml
+index 5a2823a0c1..1e0f0edf4a 100644
+--- a/middle_end/flambda/export_info.ml
++++ b/middle_end/flambda/export_info.ml
+@@ -176,6 +176,8 @@ let empty : t = {
+ 
+ let empty_with_code ~code : t = { empty with code }
+ 
++let without_code (t : t) = { t with code = None }
++
+ let opaque_transient ~compilation_unit ~root_symbol ~code : transient =
+   let export_id = Export_id.create compilation_unit in
+   let values =
+diff --git a/middle_end/flambda/export_info.mli b/middle_end/flambda/export_info.mli
+index d75b3cd3be..9adb3dbb1a 100644
+--- a/middle_end/flambda/export_info.mli
++++ b/middle_end/flambda/export_info.mli
+@@ -125,6 +125,10 @@ val opaque_transient
+     compilation. *)
+ val empty_with_code : code:Flambda.program option -> t
+ 
++(** Remove the stored whole-program body without changing the information
++    available to ordinary cross-module optimisation. *)
++val without_code : t -> t
++
+ (** Create a new export information structure. *)
+ val create
+    : sets_of_closures:(A.function_declarations Set_of_closures_id.Map.t)
+-- 
+2.55.0
+
