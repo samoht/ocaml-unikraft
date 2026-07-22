@@ -25,7 +25,7 @@ diff --git a/runtime/domain.c b/runtime/domain.c
 index 221c66e..f3ba5df 100644
 --- a/runtime/domain.c
 +++ b/runtime/domain.c
-@@ -1381,6 +1381,39 @@ CAMLprim value caml_domain_spawn(value callback, value term_sync)
+@@ -1381,6 +1381,44 @@ CAMLprim value caml_domain_spawn(value callback, value term_sync)
  
    CAMLreturn (Val_long(p.unique_id));
  }
@@ -59,6 +59,11 @@ index 221c66e..f3ba5df 100644
 +  if (entry == NULL) { ctl[0] = -2; __sync_synchronize(); return; }
 +  ctl[0] = 1; __sync_synchronize();
 +  caml_callback(*entry, Val_long(ctl[2]));
++  /* Take this domain out of OCaml the way sync_and_terminate does: join its
++     systhreads and leave the stop-the-world set. Skipping it leaves a dead
++     domain in the STW set, deadlocking a later GC or shutdown. [false]: never
++     the last domain. */
++  caml_domain_terminate(false);
 +  ctl[4]++;
 +  __sync_synchronize();
 +}
