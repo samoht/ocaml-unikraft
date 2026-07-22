@@ -1,4 +1,4 @@
-From d5b38490893b9e26631adc9440c8bcf02ee80277 Mon Sep 17 00:00:00 2001
+From 9b94bfdddcf3374cce6f8f3479619e5912afe9de Mon Sep 17 00:00:00 2001
 From: Thomas Gazagnaire <thomas@gazagnaire.org>
 Date: Mon, 20 Jul 2026 13:30:44 -0700
 Subject: [PATCH] asmlink: field-aware single-use collapse for the -use-lto
@@ -19,20 +19,30 @@ and the original declaration dies on the following round.  Explicit
 [@inline never], stubs, and closures referenced as values are left
 alone.
 
+Callees that declare their own set of closures are also left alone:
+moving such a body duplicates the declaration under fresh closure ids,
+and when a closure escapes the callee -- the generative-injector shape
+[let inj x = M.V x in (inj, proj)] returns its closures -- consumer
+units were compiled against the original ids, so their bodies project
+out of a closure id the renamed copy does not answer to and the
+whole-program simplifier faults.  lto_generative pins the shape: an
+injector applied exactly once, its pair escaping through a lifted
+toplevel binding, projected from a third unit.
+
 On the motivating shape -- a backend run wrapper chain applied once to a
 literal device list, guarding an effectful entropy seed behind a
 recursive membership walk -- the whole program now folds: five functions
 retained before, zero after, the gate folding to false and taking the
 seeding cone with it.  All reference outputs unchanged.
 ---
- asmcomp/asmlink.ml | 187 +++++++++++++++++++++++++++++++++++++++++++++
- 1 file changed, 187 insertions(+)
+ asmcomp/asmlink.ml | 215 +++++++++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 215 insertions(+)
 
 diff --git a/asmcomp/asmlink.ml b/asmcomp/asmlink.ml
-index 7f2af0accc..86fe51d781 100644
+index 7f2af0accc..d67d4c7c14 100644
 --- a/asmcomp/asmlink.ml
 +++ b/asmcomp/asmlink.ml
-@@ -1108,6 +1108,192 @@ let count_format_entry_sites (program : Flambda.program) =
+@@ -1108,6 +1108,220 @@ let count_format_entry_sites (program : Flambda.program) =
          expr);
    !sites
  
@@ -50,9 +60,10 @@ index 7f2af0accc..86fe51d781 100644
 +   the constants of the call site fold through the moved body -- a backend
 +   wrapper chain applied once to a literal device list collapses one layer
 +   per round, taking gated cones with it.  Explicit [@inline never],
-+   self-recursive functions, and closures also referenced as values are
-+   left alone; an indirect call missed by the count only costs a duplicated
-+   body until the field-level cleanup catches up, never correctness. *)
++   self-recursive functions, closures also referenced as values, and
++   callees that declare their own sets of closures are left alone; an
++   indirect call missed by the count only costs a duplicated body until
++   the field-level cleanup catches up, never correctness. *)
 +
 +let mark_single_use_applies (program : Flambda.program) =
 +  let bodies = function_bodies program in
@@ -149,6 +160,31 @@ index 7f2af0accc..86fe51d781 100644
 +    | None -> 0
 +    | Some n -> n - self_applies cid
 +  in
++  (* Moving a body that declares its own set of closures duplicates the
++     declaration under fresh closure ids.  When such a closure escapes the
++     callee -- the generative-injector shape [let inj x = M.V x in
++     (inj, proj)] returns its closures -- other units were compiled
++     against the original ids: their bodies hold [Project_var]s naming
++     closure ids that the renamed copy does not answer to, and the
++     whole-program simplifier faults on the mismatch.  Per-unit
++     compilation cannot hit this (export info is final once a consumer
++     compiles against it); only the link re-optimizes a producer out from
++     under an already-compiled consumer.  Leave such callees where they
++     are declared. *)
++  let declares_closures cid =
++    match Closure_id.Map.find_opt cid bodies with
++    | None -> true
++    | Some (decl : Flambda.function_declaration) ->
++      let found = ref false in
++      Flambda_iterators.iter
++        (fun (_ : Flambda.t) -> ())
++        (fun (named : Flambda.named) ->
++          match named with
++          | Set_of_closures _ -> found := true
++          | _ -> ())
++        decl.body;
++      !found
++  in
 +  let eligible cid =
 +    (match Closure_id.Map.find_opt cid !apply_count with
 +     | Some 1 -> true | _ -> false)
@@ -166,6 +202,7 @@ index 7f2af0accc..86fe51d781 100644
 +               | None -> true | Some n -> n <= 0))
 +         !bound_to
 +    && not (self_recursive cid)
++    && not (declares_closures cid)
 +  in
 +  (* Structurally-constant variables, for gating one unrolling step of a
 +     single-use recursive callee (a device-list walker applied to a
@@ -202,6 +239,7 @@ index 7f2af0accc..86fe51d781 100644
 +          && not decl.stub
 +        | None -> false)
 +    && List.exists (fun v -> Variable.Set.mem v !struct_consts) args
++    && not (declares_closures cid)
 +  in
 +  let marked = ref 0 in
 +  let rewrite (expr : Flambda.t) =
@@ -225,7 +263,7 @@ index 7f2af0accc..86fe51d781 100644
  let link_whole_program ~backend ~ppf_dump ~crc_interfaces units_to_link =
    let codes = get_flambda_codes units_to_link in
    let program =
-@@ -1186,6 +1372,7 @@ let link_whole_program ~backend ~ppf_dump ~crc_interfaces units_to_link =
+@@ -1186,6 +1400,7 @@ let link_whole_program ~backend ~ppf_dump ~crc_interfaces units_to_link =
        Remove_unused_program_constructs.remove_unused_program_constructs program
      in
      let program = preeval_initializers program in

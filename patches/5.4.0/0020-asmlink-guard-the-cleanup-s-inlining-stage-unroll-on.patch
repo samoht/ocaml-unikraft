@@ -1,4 +1,4 @@
-From f1a0abb5d19e4d173660f6512e84ef4446db22b6 Mon Sep 17 00:00:00 2001
+From bbdb3799554c6a65571a2598ef2e576bb5be2936 Mon Sep 17 00:00:00 2001
 From: Thomas Gazagnaire <thomas@gazagnaire.org>
 Date: Mon, 20 Jul 2026 20:04:34 -0700
 Subject: [PATCH] asmlink: guard the cleanup's inlining stage; unroll only on
@@ -30,10 +30,10 @@ unbuildable program.
  1 file changed, 31 insertions(+), 3 deletions(-)
 
 diff --git a/asmcomp/asmlink.ml b/asmcomp/asmlink.ml
-index 13c0b94740..e87aaa9219 100644
+index 66658b5052..6e47d0ad5d 100644
 --- a/asmcomp/asmlink.ml
 +++ b/asmcomp/asmlink.ml
-@@ -1232,10 +1232,14 @@ let mark_single_use_applies (program : Flambda.program) =
+@@ -1259,10 +1259,14 @@ let mark_single_use_applies (program : Flambda.program) =
        Flambda_iterators.iter_all_immutable_let_bindings expr
          ~f:(fun var (named : Flambda.named) ->
            match named with
@@ -51,7 +51,7 @@ index 13c0b94740..e87aaa9219 100644
              aliases := (var, a) :: !aliases
            | _ -> ()));
    let rec close () =
-@@ -1363,6 +1367,12 @@ let link_whole_program ~backend ~ppf_dump ~crc_interfaces units_to_link =
+@@ -1391,6 +1395,12 @@ let link_whole_program ~backend ~ppf_dump ~crc_interfaces units_to_link =
        Remove_unused_closure_vars.remove_unused_closure_variables
          ~remove_direct_call_surrogates:false program
      in
@@ -64,7 +64,7 @@ index 13c0b94740..e87aaa9219 100644
      let program =
        (* Inlining here is opt-in: with the whole program in view it can
           specialise an interpreter over its statically known data (unrolling
-@@ -1377,6 +1387,24 @@ let link_whole_program ~backend ~ppf_dump ~crc_interfaces units_to_link =
+@@ -1405,6 +1415,24 @@ let link_whole_program ~backend ~ppf_dump ~crc_interfaces units_to_link =
          ~round:0
          program
      in

@@ -1,4 +1,4 @@
-From 17a6813a8df135460b55b34ddf0ead2dfc6c39d7 Mon Sep 17 00:00:00 2001
+From 5de00a5bdc0967c44523e115f0db967ab00ca5a6 Mon Sep 17 00:00:00 2001
 From: Thomas Gazagnaire <thomas@gazagnaire.org>
 Date: Wed, 22 Jul 2026 12:57:49 -0700
 Subject: [PATCH] asmlink: bound automatic format specialisation by program
@@ -23,7 +23,7 @@ summary of a full -use-lto link.
  1 file changed, 8 insertions(+)
 
 diff --git a/asmcomp/asmlink.ml b/asmcomp/asmlink.ml
-index b1a202ea39..d3c94d5aa4 100644
+index 2ec738257a..4124af01c6 100644
 --- a/asmcomp/asmlink.ml
 +++ b/asmcomp/asmlink.ml
 @@ -1038,6 +1038,13 @@ let format_machinery_units =
@@ -40,7 +40,7 @@ index b1a202ea39..d3c94d5aa4 100644
  let count_format_entry_sites (program : Flambda.program) =
    let const_vars = ref Variable.Set.empty in
    let aliases = ref [] in
-@@ -1307,6 +1314,7 @@ let link_whole_program ~backend ~ppf_dump ~crc_interfaces units_to_link =
+@@ -1335,6 +1342,7 @@ let link_whole_program ~backend ~ppf_dump ~crc_interfaces units_to_link =
       parameters are restored afterwards.  See [count_format_entry_sites]. *)
    let auto_specialise =
      (not !Clflags.lto_inline)
