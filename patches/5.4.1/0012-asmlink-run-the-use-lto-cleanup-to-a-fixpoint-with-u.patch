@@ -1,4 +1,4 @@
-From e84daa19a05d0156ba757dfecb9ae7f0290b7b62 Mon Sep 17 00:00:00 2001
+From 6ffd49acc7e4b023c27524f36d14d173fe70ff3f Mon Sep 17 00:00:00 2001
 From: Thomas Gazagnaire <thomas@gazagnaire.org>
 Date: Mon, 20 Jul 2026 10:51:36 -0700
 Subject: [PATCH] asmlink: run the -use-lto cleanup to a fixpoint, with

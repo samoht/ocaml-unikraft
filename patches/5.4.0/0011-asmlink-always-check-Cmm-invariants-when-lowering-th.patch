@@ -1,4 +1,4 @@
-From d684f0c2b90187a7202caeba8855535a7c9fbff4 Mon Sep 17 00:00:00 2001
+From 99f6285a1cab6d5c3f850371fb96e8f03d3ccf66 Mon Sep 17 00:00:00 2001
 From: Thomas Gazagnaire <thomas@gazagnaire.org>
 Date: Mon, 20 Jul 2026 10:51:36 -0700
 Subject: [PATCH] asmlink: always check Cmm invariants when lowering the

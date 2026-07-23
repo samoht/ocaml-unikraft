@@ -1,4 +1,4 @@
-From 45f516f62a3d01c229663cf9470f35e108e1daab Mon Sep 17 00:00:00 2001
+From ce750128a002380f432b61581e4f8fb37caa54f9 Mon Sep 17 00:00:00 2001
 From: Thomas Gazagnaire <thomas@gazagnaire.org>
 Date: Mon, 20 Jul 2026 10:51:36 -0700
 Subject: [PATCH] flambda_to_clambda: allocate fresh static-fail labels for

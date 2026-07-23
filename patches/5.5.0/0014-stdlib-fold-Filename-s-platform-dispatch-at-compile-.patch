@@ -1,4 +1,4 @@
-From a348259cc1570bc4fae4a1fc47f113a2dc2bcf17 Mon Sep 17 00:00:00 2001
+From cf1bda2efbaf52a15cb1d1d17901614ab8bb3fbe Mon Sep 17 00:00:00 2001
 From: Thomas Gazagnaire <thomas@gazagnaire.org>
 Date: Mon, 20 Jul 2026 12:21:21 -0700
 Subject: [PATCH] stdlib: fold Filename's platform dispatch at compile time

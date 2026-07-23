@@ -1,4 +1,4 @@
-From 917b4c0ad338b9be901b7ef7a2e237785ffd5478 Mon Sep 17 00:00:00 2001
+From 7d61677c2a02bbafb868a9ba387c85914009df49 Mon Sep 17 00:00:00 2001
 From: Thomas Gazagnaire <thomas@gazagnaire.org>
 Date: Wed, 22 Jul 2026 12:58:11 -0700
 Subject: [PATCH] flambda: let -opaque units join -use-lto links
@@ -36,10 +36,10 @@ and without -use-lto.
  4 files changed, 37 insertions(+), 11 deletions(-)
 
 diff --git a/middle_end/compilenv.ml b/middle_end/compilenv.ml
-index 83c19ad1f9..b68329f6ee 100644
+index c58a2e70ec..5f9b1e6d47 100644
 --- a/middle_end/compilenv.ml
 +++ b/middle_end/compilenv.ml
-@@ -358,7 +358,27 @@ let write_unit_info info filename =
+@@ -364,7 +364,27 @@ let write_unit_info info filename =
    output_string oc cmx_magic_number;
    output_value oc info;
    flush oc;

@@ -1,4 +1,4 @@
-From 0ebbc2bc7c839724edfcc5166cd975cfa0c781c3 Mon Sep 17 00:00:00 2001
+From d9b0ff29d862fa2623ee0bc7ed6b0c60dea4da22 Mon Sep 17 00:00:00 2001
 From: Thomas Gazagnaire <thomas@gazagnaire.org>
 Date: Wed, 22 Jul 2026 12:57:49 -0700
 Subject: [PATCH] asmlink: bound automatic format specialisation by program

@@ -1,4 +1,4 @@
-From 8b59d5fb2f182be634fb589cad3c09a73dde3f7c Mon Sep 17 00:00:00 2001
+From e4d57b8f6808be8ffb88bbfd25f2383a4bd5e807 Mon Sep 17 00:00:00 2001
 From: Thomas Gazagnaire <thomas@gazagnaire.org>
 Date: Mon, 20 Jul 2026 12:10:14 -0700
 Subject: [PATCH] semantics_of_primitives: comparison C calls are effect-free

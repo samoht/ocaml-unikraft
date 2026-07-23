@@ -1,4 +1,4 @@
-From 5832618c2d05d5254591438c85f21e66040ebefa Mon Sep 17 00:00:00 2001
+From 654a20675fbdb3fb4d93160879adb08dcca4ff38 Mon Sep 17 00:00:00 2001
 From: Thomas Gazagnaire <thomas@gazagnaire.org>
 Date: Wed, 22 Jul 2026 12:57:18 -0700
 Subject: [PATCH] asmlink: keep the budgets supplied with an explicit

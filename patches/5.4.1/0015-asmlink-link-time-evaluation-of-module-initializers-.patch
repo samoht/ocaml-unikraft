@@ -1,4 +1,4 @@
-From f197f967a52b75c66e36fc532eca941001dec77e Mon Sep 17 00:00:00 2001
+From c9f7d9b4552bee5d4abf26bc1ae45d756651b19a Mon Sep 17 00:00:00 2001
 From: Thomas Gazagnaire <thomas@gazagnaire.org>
 Date: Mon, 20 Jul 2026 10:51:37 -0700
 Subject: [PATCH] asmlink: link-time evaluation of module initializers under

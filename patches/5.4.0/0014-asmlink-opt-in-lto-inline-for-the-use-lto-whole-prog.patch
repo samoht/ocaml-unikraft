@@ -1,4 +1,4 @@
-From 4511d09b69e7387cf07ec3e871377387eeed2d52 Mon Sep 17 00:00:00 2001
+From 49b2bedaa9a4e44819efb107a3cfe5c818513cd7 Mon Sep 17 00:00:00 2001
 From: Thomas Gazagnaire <thomas@gazagnaire.org>
 Date: Mon, 20 Jul 2026 10:51:37 -0700
 Subject: [PATCH] asmlink: opt-in -lto-inline for the -use-lto whole-program

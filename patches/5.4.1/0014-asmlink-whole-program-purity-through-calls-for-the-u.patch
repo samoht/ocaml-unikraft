@@ -1,4 +1,4 @@
-From 4ef246320cc0b90e01e8bf4fd6a4f85f5a98aa4f Mon Sep 17 00:00:00 2001
+From 5506b05853b776869d352c94de7166353fa9572b Mon Sep 17 00:00:00 2001
 From: Thomas Gazagnaire <thomas@gazagnaire.org>
 Date: Mon, 20 Jul 2026 10:51:37 -0700
 Subject: [PATCH] asmlink: whole-program purity through calls for the -use-lto

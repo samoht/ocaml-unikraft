@@ -1,4 +1,4 @@
-From b53b29b8629095705e70dfe72068af0ac0e0ec42 Mon Sep 17 00:00:00 2001
+From bfc189b0718af8ee5b86fedb0a9f2f3efcab4acb Mon Sep 17 00:00:00 2001
 From: Thomas Gazagnaire <thomas@gazagnaire.org>
 Date: Mon, 20 Jul 2026 20:04:34 -0700
 Subject: [PATCH] asmlink: guard the cleanup's inlining stage; unroll only on

@@ -1,4 +1,4 @@
-From 30cc97184ffdb83978558c403fb41a8fa96c52ad Mon Sep 17 00:00:00 2001
+From ce8b95b44cb468cf62bb21f1d5743713e73859d3 Mon Sep 17 00:00:00 2001
 From: Thomas Gazagnaire <thomas@gazagnaire.org>
 Date: Mon, 20 Jul 2026 10:52:15 -0700
 Subject: [PATCH] asmlink: automatic specialisation of constant-format printf

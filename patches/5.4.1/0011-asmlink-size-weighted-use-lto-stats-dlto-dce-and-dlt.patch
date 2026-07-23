@@ -1,4 +1,4 @@
-From 177ecc4d5de370967ebb860c479acd8c4f90cf9d Mon Sep 17 00:00:00 2001
+From 4ac146a8ab9160da2d343190dd0aeebb2526f261 Mon Sep 17 00:00:00 2001
 From: Thomas Gazagnaire <thomas@gazagnaire.org>
 Date: Mon, 20 Jul 2026 10:51:36 -0700
 Subject: [PATCH] asmlink: size-weighted -use-lto stats, -dlto-dce and

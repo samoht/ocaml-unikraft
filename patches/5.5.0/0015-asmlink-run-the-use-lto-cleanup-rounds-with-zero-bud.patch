@@ -1,4 +1,4 @@
-From 0984c17c00ae26a6c857786c5f4b803278a1f36a Mon Sep 17 00:00:00 2001
+From 6f708c43a3391dfb96ddf2a7aad625173159e556 Mon Sep 17 00:00:00 2001
 From: Thomas Gazagnaire <thomas@gazagnaire.org>
 Date: Mon, 20 Jul 2026 13:16:44 -0700
 Subject: [PATCH] asmlink: run the -use-lto cleanup rounds with zero-budget

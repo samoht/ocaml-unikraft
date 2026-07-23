@@ -1,4 +1,4 @@
-From e741b603dbdebad403f35c2e1d68b608ec76128d Mon Sep 17 00:00:00 2001
+From cf0f11ecc5a87353291de13db0289d5362cbf8bf Mon Sep 17 00:00:00 2001
 From: Thomas Gazagnaire <thomas@gazagnaire.org>
 Date: Mon, 20 Jul 2026 10:52:14 -0700
 Subject: [PATCH] flambda: refine the effects of a few C primitives

@@ -1,4 +1,4 @@
-From 965191fb7a24994e587b269372c17c87df791d85 Mon Sep 17 00:00:00 2001
+From 54abd19536f9ca17f27a594716717fda59a7db0c Mon Sep 17 00:00:00 2001
 From: Thomas Gazagnaire <thomas@gazagnaire.org>
 Date: Mon, 20 Jul 2026 10:51:36 -0700
 Subject: [PATCH] Add whole-program dead code elimination for flambda
@@ -24,6 +24,14 @@ code-less dependency is fully legitimate outside a -use-lto link, and
 reported preemptively it turned every -a archive over -opaque members
 into a hard error under -warn-error.
 
+For the same reason an --enable-lto compiler stops emitting warning
+58 (no-cmx-file) at compile time: the cross-module information a
+per-unit compilation misses -- dune's virtual libraries and link-time
+modules are compiled against interfaces alone by design -- is back in
+view at the -use-lto link, and a module truly absent from a link is a
+link error in its own right.  The testsuite grows lto/no-lto
+predicates so either behaviour stays pinned.
+
 -opaque units store no code even under --enable-lto: -opaque promises
 that a unit's cmx digest depends only on what dependents may assume,
 so recompiling the same source elsewhere must digest identically and
@@ -48,6 +56,7 @@ cmx code store, the configure and warning plumbing, and -pack support.
  driver/main_args.mli                          |   1 +
  driver/optmaindriver.ml                       |   2 +-
  dune                                          |   2 +-
+ middle_end/compilenv.ml                       |  12 +-
  middle_end/flambda/build_export_info.ml       |  18 +-
  middle_end/flambda/closure_conversion.ml      |   2 +-
  middle_end/flambda/export_info.ml             |  16 +-
@@ -66,6 +75,9 @@ cmx code store, the configure and warning plumbing, and -pack support.
  middle_end/flambda/share_constants.ml         |  14 +-
  middle_end/symbol.ml                          |   2 +-
  middle_end/symbol.mli                         |   2 +-
+ ocamltest/ocaml_actions.ml                    |  16 ++
+ ocamltest/ocamltest_config.ml.in              |   2 +
+ ocamltest/ocamltest_config.mli                |   3 +
  otherlibs/Makefile.otherlibs.common           |   3 +-
  otherlibs/systhreads/Makefile                 |   2 +-
  stdlib/Makefile                               |   2 +-
@@ -78,7 +90,7 @@ cmx code store, the configure and warning plumbing, and -pack support.
  utils/config.mli                              |   3 +
  utils/warnings.ml                             |  17 +-
  utils/warnings.mli                            |   1 +
- 43 files changed, 560 insertions(+), 86 deletions(-)
+ 47 files changed, 590 insertions(+), 89 deletions(-)
 
 diff --git a/asmcomp/asmgen.mli b/asmcomp/asmgen.mli
 index b43d38559d..6c5a79813d 100644
@@ -668,6 +680,29 @@ index dbe8af9ed9..9a05abfa09 100644
   (libraries ocamloptcomp ocamlmiddleend ocamlcommon runtime stdlib)
   (modules optmain))
  
+diff --git a/middle_end/compilenv.ml b/middle_end/compilenv.ml
+index 231abfc194..5b07eed9a1 100644
+--- a/middle_end/compilenv.ml
++++ b/middle_end/compilenv.ml
+@@ -220,9 +220,15 @@ let get_global_info global_ident = (
+                                (filename, p1, current_unit.ui_name, p2))));
+             (Some ui, Some crc)
+           with Not_found ->
+-            let warn = Warnings.No_cmx_file modname in
+-              Location.prerr_warning Location.none warn;
+-              (None, None)
++            (* A compiler that stores whole-program code (--enable-lto)
++               keeps every unit's body in its .cmx: what this per-unit
++               compilation cannot see is back in view at a -use-lto link,
++               and a module truly absent from a link is a link error in
++               its own right.  Only warn when no such recovery exists. *)
++            if not Config.cmx_contains_all_code then
++              Location.prerr_warning Location.none
++                (Warnings.No_cmx_file modname);
++            (None, None)
+           end
+       in
+       current_unit.ui_imports_cmx <-
 diff --git a/middle_end/flambda/build_export_info.ml b/middle_end/flambda/build_export_info.ml
 index 89dcc3beca..dc9d787d49 100644
 --- a/middle_end/flambda/build_export_info.ml
@@ -1323,6 +1358,67 @@ index d2771af244..382d230005 100644
  
  val compilation_unit : t -> Compilation_unit.t
  val label : t -> Linkage_name.t
+diff --git a/ocamltest/ocaml_actions.ml b/ocamltest/ocaml_actions.ml
+index de8bf0ba8c..94fc916e6d 100644
+--- a/ocamltest/ocaml_actions.ml
++++ b/ocamltest/ocaml_actions.ml
+@@ -1137,6 +1137,20 @@ let no_flambda = make
+     "support for flambda disabled"
+     "support for flambda enabled")
+ 
++let lto = Actions.make
++  ~name:"lto"
++  ~description:"Passes if the compiler is configured with --enable-lto"
++  (Actions_helpers.pass_or_skip Ocamltest_config.lto
++    "compiler configured with --enable-lto"
++    "compiler configured without --enable-lto")
++
++let no_lto = make
++  ~name:"no-lto"
++  ~description:"Passes if the compiler is NOT configured with --enable-lto"
++  (Actions_helpers.pass_or_skip (not Ocamltest_config.lto)
++    "compiler configured without --enable-lto"
++    "compiler configured with --enable-lto")
++
+ let shared_libraries = Actions.make
+   ~name:"shared-libraries"
+   ~description:"Passes if shared libraries are supported"
+@@ -1394,6 +1408,8 @@ let _ =
+     no_flat_float_array;
+     flambda;
+     no_flambda;
++    lto;
++    no_lto;
+     shared_libraries;
+     no_shared_libraries;
+     native_compiler;
+diff --git a/ocamltest/ocamltest_config.ml.in b/ocamltest/ocamltest_config.ml.in
+index 68b572deff..9ab79e559d 100644
+--- a/ocamltest/ocamltest_config.ml.in
++++ b/ocamltest/ocamltest_config.ml.in
+@@ -59,6 +59,8 @@ let ocamlsrcdir = {@QS@|@ocamlsrcdir@|@QS@}
+ 
+ let flambda = @flambda@
+ 
++let lto = @lto@
++
+ let ocamlc_default_flags = ""
+ let ocamlopt_default_flags = ""
+ 
+diff --git a/ocamltest/ocamltest_config.mli b/ocamltest/ocamltest_config.mli
+index 55bc657c5e..84e9b9d531 100644
+--- a/ocamltest/ocamltest_config.mli
++++ b/ocamltest/ocamltest_config.mli
+@@ -88,6 +88,9 @@ val ocamlsrcdir : string
+ val flambda : bool
+ (** Whether flambda has been enabled at configure time *)
+ 
++val lto : bool
++(** Whether the compiler was configured with --enable-lto *)
++
+ val flat_float_array : bool
+ (* Whether the compiler was configured with --enable-flat-float-array *)
+ 
 diff --git a/otherlibs/Makefile.otherlibs.common b/otherlibs/Makefile.otherlibs.common
 index f08dd13ef8..6bd739fbc4 100644
 --- a/otherlibs/Makefile.otherlibs.common

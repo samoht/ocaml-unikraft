@@ -1,4 +1,4 @@
-From 10a15b2caa44b81cafa3f8a2430043f48f49093e Mon Sep 17 00:00:00 2001
+From 7f33250777faeed34a0a5041af77388bf63ab1a9 Mon Sep 17 00:00:00 2001
 From: Thomas Gazagnaire <thomas@gazagnaire.org>
 Date: Mon, 20 Jul 2026 13:30:44 -0700
 Subject: [PATCH] asmlink: field-aware single-use collapse for the -use-lto
