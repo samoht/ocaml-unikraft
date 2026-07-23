@@ -1,4 +1,4 @@
-From 9d8da74b527779da084ce99d6cdebb898008c8ec Mon Sep 17 00:00:00 2001
+From 4511d09b69e7387cf07ec3e871377387eeed2d52 Mon Sep 17 00:00:00 2001
 From: Thomas Gazagnaire <thomas@gazagnaire.org>
 Date: Mon, 20 Jul 2026 10:51:37 -0700
 Subject: [PATCH] asmlink: opt-in -lto-inline for the -use-lto whole-program
@@ -33,10 +33,10 @@ checks the interpreter is eliminated entirely.
  5 files changed, 19 insertions(+), 1 deletion(-)
 
 diff --git a/asmcomp/asmlink.ml b/asmcomp/asmlink.ml
-index 293d874c6c..4f4706eac3 100644
+index 40678403f9..e36557bb1c 100644
 --- a/asmcomp/asmlink.ml
 +++ b/asmcomp/asmlink.ml
-@@ -1075,8 +1075,13 @@ let link_whole_program ~backend ~ppf_dump ~crc_interfaces units_to_link =
+@@ -1085,8 +1085,13 @@ let link_whole_program ~backend ~ppf_dump ~crc_interfaces units_to_link =
          ~remove_direct_call_surrogates:false program
      in
      let program =

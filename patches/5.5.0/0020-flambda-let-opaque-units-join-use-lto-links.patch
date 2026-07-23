@@ -1,4 +1,4 @@
-From 574f2bdfc34e3bfbc1d3a2b2aeb8c63e33e239aa Mon Sep 17 00:00:00 2001
+From 68ee65f095f2d3297a4c9f718f2eba98db5fe3ef Mon Sep 17 00:00:00 2001
 From: Thomas Gazagnaire <thomas@gazagnaire.org>
 Date: Wed, 22 Jul 2026 12:58:11 -0700
 Subject: [PATCH] flambda: let -opaque units join -use-lto links
@@ -29,51 +29,17 @@ that does not store code at all.  lto_opaque tests the dune shape, an
 +a that archiving an -opaque member into a .cmxa stays silent, with
 and without -use-lto.
 ---
- asmcomp/asmlibrarian.ml                 |  9 ++++----
- middle_end/compilenv.ml                 | 28 +++++++++++++++++++++----
- middle_end/flambda/build_export_info.ml | 20 +++++++++---------
+ middle_end/compilenv.ml                 | 22 +++++++++++++++++++++-
+ middle_end/flambda/build_export_info.ml | 20 ++++++++++----------
  middle_end/flambda/export_info.ml       |  2 ++
  middle_end/flambda/export_info.mli      |  4 ++++
- 5 files changed, 44 insertions(+), 19 deletions(-)
+ 4 files changed, 37 insertions(+), 11 deletions(-)
 
-diff --git a/asmcomp/asmlibrarian.ml b/asmcomp/asmlibrarian.ml
-index 26b7523a65..5a8b4b3cf9 100644
---- a/asmcomp/asmlibrarian.ml
-+++ b/asmcomp/asmlibrarian.ml
-@@ -42,11 +42,10 @@ let read_info name =
-     match info.ui_export_info with
-     | Flambda export_info ->
-         if Config.cmx_contains_all_code then begin
--          (* As in [Compilenv.write_unit_info]: a code-less member (an
--             -opaque unit, e.g. every dev-profile compile under dune) is
--             fully legitimate unless this archive step is itself part of a
--             -use-lto build; emitted unconditionally, the warning turned
--             every dev cmxa into a hard error under -warn-error. *)
-+          (* As in [Compilenv.write_unit_info]: a member from a compiler that
-+             did not store its code is fully legitimate unless this archive
-+             step is itself part of a -use-lto build; emitted unconditionally,
-+             the warning can become a hard error under [-warn-error]. *)
-           if export_info.Export_info.code = None
-              && !Clflags.whole_program_rebuild then
-             Location.prerr_warning Location.none
 diff --git a/middle_end/compilenv.ml b/middle_end/compilenv.ml
-index d85418b739..153ab03e1c 100644
+index d568bbcd43..b067be7b80 100644
 --- a/middle_end/compilenv.ml
 +++ b/middle_end/compilenv.ml
-@@ -380,9 +380,9 @@ let check_required_modules_are_compiled_with_lto () =
- 
- let write_unit_info info filename =
-   (* Only worth reporting when this compilation is itself heading for a
--     -use-lto link: a code-less dependency (an -opaque module) is fully
--     legitimate otherwise, and the whole-program link has its own error for
--     the case that matters. *)
-+     -use-lto link: a dependency from a compiler that did not store its code
-+     is fully legitimate otherwise, and the whole-program link has its own
-+     error for the case that matters. *)
-   if Config.flambda && Config.cmx_contains_all_code
-      && !Clflags.whole_program_rebuild then
-     check_required_modules_are_compiled_with_lto ();
-@@ -390,7 +390,27 @@ let write_unit_info info filename =
+@@ -367,7 +367,27 @@ let write_unit_info info filename =
    output_string oc cmx_magic_number;
    output_value oc info;
    flush oc;

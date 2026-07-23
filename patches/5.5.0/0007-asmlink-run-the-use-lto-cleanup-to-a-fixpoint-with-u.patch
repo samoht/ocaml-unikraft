@@ -1,4 +1,4 @@
-From 6c82a2bb6c38a14415c841d318674bb070bc52d0 Mon Sep 17 00:00:00 2001
+From 077af04cda500e20b4d2c1e65e459121850d0653 Mon Sep 17 00:00:00 2001
 From: Thomas Gazagnaire <thomas@gazagnaire.org>
 Date: Mon, 20 Jul 2026 10:52:14 -0700
 Subject: [PATCH] asmlink: run the -use-lto cleanup to a fixpoint, with
@@ -22,10 +22,10 @@ pass now composes with the others instead of stopping after one round.
  1 file changed, 27 insertions(+), 9 deletions(-)
 
 diff --git a/asmcomp/asmlink.ml b/asmcomp/asmlink.ml
-index 5c2a3d07be..bf78fac1a0 100644
+index cda738ead7..8256e04384 100644
 --- a/asmcomp/asmlink.ml
 +++ b/asmcomp/asmlink.ml
-@@ -621,17 +621,35 @@ let link_whole_program ~backend ~ppf_dump ~crc_interfaces units_to_link =
+@@ -631,17 +631,35 @@ let link_whole_program ~backend ~ppf_dump ~crc_interfaces units_to_link =
    if !Clflags.dump_rawflambda then
      Format.fprintf ppf_dump "After concatenation:@ %a@."
        Flambda.print_program program;

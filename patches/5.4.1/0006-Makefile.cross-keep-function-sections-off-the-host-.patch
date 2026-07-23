@@ -1,4 +1,4 @@
-From ec6d9092c98e2cb69144e20145bd7a9cb6b67803 Mon Sep 17 00:00:00 2001
+From d68573486e33f5be12858a0b677aa7ef5c25dfdd Mon Sep 17 00:00:00 2001
 From: Thomas Gazagnaire <thomas@gazagnaire.org>
 Date: Wed, 8 Jul 2026 23:43:23 -0700
 Subject: [PATCH] Makefile.cross: keep -function-sections off the host .opt

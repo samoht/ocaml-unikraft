@@ -1,4 +1,4 @@
-From 7844a006a4331b054ee7dc94a0b41ea179426333 Mon Sep 17 00:00:00 2001
+From 30cc97184ffdb83978558c403fb41a8fa96c52ad Mon Sep 17 00:00:00 2001
 From: Thomas Gazagnaire <thomas@gazagnaire.org>
 Date: Mon, 20 Jul 2026 10:52:15 -0700
 Subject: [PATCH] asmlink: automatic specialisation of constant-format printf
@@ -42,10 +42,10 @@ drive it.
  1 file changed, 108 insertions(+), 2 deletions(-)
 
 diff --git a/asmcomp/asmlink.ml b/asmcomp/asmlink.ml
-index 1d3a75e14b..605684e2c5 100644
+index 2fff74ef94..8740d16f71 100644
 --- a/asmcomp/asmlink.ml
 +++ b/asmcomp/asmlink.ml
-@@ -1031,6 +1031,83 @@ let preeval_initializers (program : Flambda.program) =
+@@ -1041,6 +1041,83 @@ let preeval_initializers (program : Flambda.program) =
      { program with program_body = walk program.program_body }
    end
  
@@ -129,7 +129,7 @@ index 1d3a75e14b..605684e2c5 100644
  let link_whole_program ~backend ~ppf_dump ~crc_interfaces units_to_link =
    let codes = get_flambda_codes units_to_link in
    let program =
-@@ -1074,6 +1151,35 @@ let link_whole_program ~backend ~ppf_dump ~crc_interfaces units_to_link =
+@@ -1084,6 +1161,35 @@ let link_whole_program ~backend ~ppf_dump ~crc_interfaces units_to_link =
    if !Clflags.dump_rawflambda then
      Format.fprintf ppf_dump "After concatenation:@ %a@."
        Flambda.print_program program;
@@ -165,7 +165,7 @@ index 1d3a75e14b..605684e2c5 100644
    (* Iterate the cleanup to a fixpoint: eliminating a function or an unused
       closure variable can drop the last reference to another symbol, so each
       round can expose more dead code.  Terminates because a further round is
-@@ -1099,7 +1205,7 @@ let link_whole_program ~backend ~ppf_dump ~crc_interfaces units_to_link =
+@@ -1109,7 +1215,7 @@ let link_whole_program ~backend ~ppf_dump ~crc_interfaces units_to_link =
           itself is collected -- a large win on small images -- but its
           speed-oriented duplication grows large programs. *)
        Inline_and_simplify.run
@@ -174,7 +174,7 @@ index 1d3a75e14b..605684e2c5 100644
          ~ppf_dump
          ~backend
          ~prefixname:"_link_"
-@@ -1109,7 +1215,7 @@ let link_whole_program ~backend ~ppf_dump ~crc_interfaces units_to_link =
+@@ -1119,7 +1225,7 @@ let link_whole_program ~backend ~ppf_dump ~crc_interfaces units_to_link =
      if (program_stats program).fun_count < count then clean program
      else program
    in

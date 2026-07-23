@@ -1,4 +1,4 @@
-From f7130ace9a09d03631d49e96a1f16ccb79ef05b9 Mon Sep 17 00:00:00 2001
+From d684f0c2b90187a7202caeba8855535a7c9fbff4 Mon Sep 17 00:00:00 2001
 From: Thomas Gazagnaire <thomas@gazagnaire.org>
 Date: Mon, 20 Jul 2026 10:51:36 -0700
 Subject: [PATCH] asmlink: always check Cmm invariants when lowering the
@@ -18,10 +18,10 @@ fundecl at link time, which the whole-program link already dwarfs.
  1 file changed, 10 insertions(+), 5 deletions(-)
 
 diff --git a/asmcomp/asmlink.ml b/asmcomp/asmlink.ml
-index 278372dba0..a91b0c50c1 100644
+index b6536f5d30..20c43457e2 100644
 --- a/asmcomp/asmlink.ml
 +++ b/asmcomp/asmlink.ml
-@@ -651,11 +651,16 @@ let link_whole_program ~backend ~ppf_dump ~crc_interfaces units_to_link =
+@@ -661,11 +661,16 @@ let link_whole_program ~backend ~ppf_dump ~crc_interfaces units_to_link =
    (match !Clflags.lto_why_live with
     | None -> ()
     | Some pattern -> why_live ~ppf_dump ~pattern cleaned_program);

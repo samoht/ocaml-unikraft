@@ -1,4 +1,4 @@
-From a3eea855c7344c442d2feaab8ba2cf5310b3cb83 Mon Sep 17 00:00:00 2001
+From 5832618c2d05d5254591438c85f21e66040ebefa Mon Sep 17 00:00:00 2001
 From: Thomas Gazagnaire <thomas@gazagnaire.org>
 Date: Wed, 22 Jul 2026 12:57:18 -0700
 Subject: [PATCH] asmlink: keep the budgets supplied with an explicit
@@ -24,10 +24,10 @@ cleanups while discarding the growth.
  1 file changed, 4 insertions(+), 1 deletion(-)
 
 diff --git a/asmcomp/asmlink.ml b/asmcomp/asmlink.ml
-index ef591813b8..782e1cc3fd 100644
+index 0c3e100588..6b999de4ce 100644
 --- a/asmcomp/asmlink.ml
 +++ b/asmcomp/asmlink.ml
-@@ -1361,7 +1361,10 @@ let link_whole_program ~backend ~ppf_dump ~crc_interfaces units_to_link =
+@@ -1371,7 +1371,10 @@ let link_whole_program ~backend ~ppf_dump ~crc_interfaces units_to_link =
          sites >= 1 && sites <= format_specialise_max_sites)
    in
    let with_specialise_budgets f =

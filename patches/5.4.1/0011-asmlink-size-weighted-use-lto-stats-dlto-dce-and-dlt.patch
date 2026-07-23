@@ -1,4 +1,4 @@
-From 724b9b07dea4cac17c93e82307128b6846d25dc6 Mon Sep 17 00:00:00 2001
+From 177ecc4d5de370967ebb860c479acd8c4f90cf9d Mon Sep 17 00:00:00 2001
 From: Thomas Gazagnaire <thomas@gazagnaire.org>
 Date: Mon, 20 Jul 2026 10:51:36 -0700
 Subject: [PATCH] asmlink: size-weighted -use-lto stats, -dlto-dce and
@@ -41,10 +41,10 @@ Two dump flags expose the detail:
  5 files changed, 238 insertions(+), 1 deletion(-)
 
 diff --git a/asmcomp/asmlink.ml b/asmcomp/asmlink.ml
-index c47241535b..cf4ba9427f 100644
+index 981f62e74c..ece45a9fc3 100644
 --- a/asmcomp/asmlink.ml
 +++ b/asmcomp/asmlink.ml
-@@ -352,6 +352,214 @@ let compile_implementation_flambda ~unit_prefix ~backend
+@@ -362,6 +362,214 @@ let compile_implementation_flambda ~unit_prefix ~backend
      in
      Asmgen.end_gen_implementation ~ppf_dump clambda_with_constants)
  
@@ -259,7 +259,7 @@ index c47241535b..cf4ba9427f 100644
  let link_whole_program ~backend ~ppf_dump ~crc_interfaces units_to_link =
    let codes = get_flambda_codes units_to_link in
    let program =
-@@ -387,6 +595,7 @@ let link_whole_program ~backend ~ppf_dump ~crc_interfaces units_to_link =
+@@ -397,6 +605,7 @@ let link_whole_program ~backend ~ppf_dump ~crc_interfaces units_to_link =
        ~f:(fun expr -> Flambda_iterators.iter note (fun _ -> ()) expr);
      Lambda.ensure_raise_count !max_id
    in
@@ -267,7 +267,7 @@ index c47241535b..cf4ba9427f 100644
    (* No [Flambda_invariants.check_exn] here: the concatenated program mixes
       variables from several compilation units (their [Set_of_closures_id] etc.
       deliberately keep their originating unit, which [Flambda_to_clambda] relies
-@@ -418,7 +627,12 @@ let link_whole_program ~backend ~ppf_dump ~crc_interfaces units_to_link =
+@@ -428,7 +637,12 @@ let link_whole_program ~backend ~ppf_dump ~crc_interfaces units_to_link =
      let open Flambda in
      Let_symbol (Compilenv.current_unit_symbol (), Block (Tag.create_exn 0, []),
                  cleaned_program.program_body) in

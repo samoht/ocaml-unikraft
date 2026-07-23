@@ -1,4 +1,4 @@
-From aef281bdec055708fb6f56e32c1625bf32849cd5 Mon Sep 17 00:00:00 2001
+From 0984c17c00ae26a6c857786c5f4b803278a1f36a Mon Sep 17 00:00:00 2001
 From: Thomas Gazagnaire <thomas@gazagnaire.org>
 Date: Mon, 20 Jul 2026 13:16:44 -0700
 Subject: [PATCH] asmlink: run the -use-lto cleanup rounds with zero-budget
@@ -25,10 +25,10 @@ elimination through such chains.
  1 file changed, 20 insertions(+), 2 deletions(-)
 
 diff --git a/asmcomp/asmlink.ml b/asmcomp/asmlink.ml
-index 605684e2c5..3847e5852e 100644
+index 8740d16f71..017cf3bdb6 100644
 --- a/asmcomp/asmlink.ml
 +++ b/asmcomp/asmlink.ml
-@@ -1161,7 +1161,25 @@ let link_whole_program ~backend ~ppf_dump ~crc_interfaces units_to_link =
+@@ -1171,7 +1171,25 @@ let link_whole_program ~backend ~ppf_dump ~crc_interfaces units_to_link =
          sites >= 1 && sites <= format_specialise_max_sites)
    in
    let with_specialise_budgets f =
@@ -55,7 +55,7 @@ index 605684e2c5..3847e5852e 100644
      else begin
        let r x = Misc.R (x, !x) in
        Misc.protect_refs
-@@ -1205,7 +1223,7 @@ let link_whole_program ~backend ~ppf_dump ~crc_interfaces units_to_link =
+@@ -1215,7 +1233,7 @@ let link_whole_program ~backend ~ppf_dump ~crc_interfaces units_to_link =
           itself is collected -- a large win on small images -- but its
           speed-oriented duplication grows large programs. *)
        Inline_and_simplify.run

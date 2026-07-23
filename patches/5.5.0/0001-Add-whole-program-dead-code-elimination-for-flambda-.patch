@@ -1,4 +1,4 @@
-From 23604a161c19a299150f57050baed0783a5521dc Mon Sep 17 00:00:00 2001
+From 9455a2ec89cad0ab68341d823fdf4a7630626071 Mon Sep 17 00:00:00 2001
 From: Thomas Gazagnaire <thomas@gazagnaire.org>
 Date: Mon, 20 Jul 2026 10:52:14 -0700
 Subject: [PATCH] Add whole-program dead code elimination for flambda
@@ -14,13 +14,15 @@ must conservatively keep.
 
 The link needs every unit's body, so a .cmx without stored code (from
 a compiler configured without LTO, or from -opaque, below) cannot take
-part and the link reports it.  Compiling with -use-lto requests the
-advance notice: new warning 76 (module-compiled-without-lto, named
-after its constructor as the mnemonics test requires) reports required
-modules whose .cmx lacks a body.  The warning is confined to -use-lto
-compilations because a code-less dependency is fully legitimate
-otherwise: emitted unconditionally, it turned every -a archive over
--opaque members into a hard error under -warn-error.
+part.  The -use-lto link is the only place that requirement is real,
+and the only place it is checked: new warning 76
+(module-compiled-without-lto, named after its constructor as the
+mnemonics test requires) reports each such module there, and the link
+falls back to a normal per-unit link; -warn-error +76 hardens the
+fallback into a failure.  Compile and archive steps never warn: a
+code-less dependency is fully legitimate outside a -use-lto link, and
+reported preemptively it turned every -a archive over -opaque members
+into a hard error under -warn-error.
 
 -opaque units store no code even under --enable-lto: -opaque promises
 that a unit's cmx digest depends only on what dependents may assume,
@@ -34,30 +36,30 @@ prototype (ocaml/ocaml#608), rebased onto 5.5.0 and extended with the
 cmx code store, the configure and warning plumbing, and -pack support.
 ---
  asmcomp/asmgen.mli                            |   6 +
- asmcomp/asmlibrarian.ml                       |  28 ++-
- asmcomp/asmlink.ml                            | 165 ++++++++++++++++--
- asmcomp/asmlink.mli                           |   5 +-
- asmcomp/asmpackager.ml                        |  60 ++++++-
+ asmcomp/asmlibrarian.ml                       |  21 +-
+ asmcomp/asmlink.ml                            | 183 ++++++++++++++++--
+ asmcomp/asmlink.mli                           |   4 +-
+ asmcomp/asmpackager.ml                        |  60 +++++-
  asmcomp/asmpackager.mli                       |   1 +
+ configure                                     |  17 ++
  configure.ac                                  |   9 +
  driver/compenv.ml                             |   2 +
  driver/main_args.ml                           |  11 ++
  driver/main_args.mli                          |   1 +
  driver/optmaindriver.ml                       |   2 +-
  dune                                          |   2 +-
- middle_end/compilenv.ml                       |  23 +++
  middle_end/flambda/build_export_info.ml       |  18 +-
  middle_end/flambda/closure_conversion.ml      |   2 +-
  middle_end/flambda/export_info.ml             |  16 +-
- middle_end/flambda/export_info.mli            |  10 ++
+ middle_end/flambda/export_info.mli            |  10 +
  middle_end/flambda/export_info_for_pack.ml    |   3 +-
  middle_end/flambda/flambda.ml                 |   6 +-
  middle_end/flambda/flambda.mli                |   4 +-
  middle_end/flambda/flambda_invariants.ml      |   2 +-
  middle_end/flambda/flambda_middle_end.ml      |  19 +-
  middle_end/flambda/flambda_middle_end.mli     |   7 +
- middle_end/flambda/flambda_to_clambda.ml      |  42 +++--
- middle_end/flambda/flambda_utils.ml           | 121 ++++++++++++-
+ middle_end/flambda/flambda_to_clambda.ml      |  42 ++--
+ middle_end/flambda/flambda_utils.ml           | 121 +++++++++++-
  middle_end/flambda/flambda_utils.mli          |  14 +-
  middle_end/flambda/lift_constants.ml          |   2 +-
  .../remove_unused_program_constructs.ml       |   2 +-
@@ -74,9 +76,9 @@ cmx code store, the configure and warning plumbing, and -pack support.
  utils/config.fixed.ml                         |   1 +
  utils/config.generated.ml.in                  |   1 +
  utils/config.mli                              |   3 +
- utils/warnings.ml                             |  15 +-
+ utils/warnings.ml                             |  17 +-
  utils/warnings.mli                            |   1 +
- 43 files changed, 554 insertions(+), 86 deletions(-)
+ 43 files changed, 560 insertions(+), 86 deletions(-)
 
 diff --git a/asmcomp/asmgen.mli b/asmcomp/asmgen.mli
 index b43d38559d..6c5a79813d 100644
@@ -96,7 +98,7 @@ index b43d38559d..6c5a79813d 100644
      ppf_dump:Format.formatter -> Cmm.phrase -> unit
  
 diff --git a/asmcomp/asmlibrarian.ml b/asmcomp/asmlibrarian.ml
-index 823b07db3a..26b7523a65 100644
+index 823b07db3a..8fd464120d 100644
 --- a/asmcomp/asmlibrarian.ml
 +++ b/asmcomp/asmlibrarian.ml
 @@ -26,12 +26,6 @@ type error =
@@ -112,7 +114,7 @@ index 823b07db3a..26b7523a65 100644
  let read_info name =
    let filename =
      try
-@@ -44,7 +38,27 @@ let read_info name =
+@@ -44,7 +38,20 @@ let read_info name =
       since the compiler will go looking directly for .cmx files.
       The linker, which is the only one that reads .cmxa files, does not
       need the approximation. *)
@@ -120,19 +122,12 @@ index 823b07db3a..26b7523a65 100644
 +  let export_info =
 +    match info.ui_export_info with
 +    | Flambda export_info ->
-+        if Config.cmx_contains_all_code then begin
-+          (* As in [Compilenv.write_unit_info]: a code-less member (an
-+             -opaque unit, e.g. every dev-profile compile under dune) is
-+             fully legitimate unless this archive step is itself part of a
-+             -use-lto build; emitted unconditionally, the warning turned
-+             every dev cmxa into a hard error under -warn-error. *)
-+          if export_info.Export_info.code = None
-+             && !Clflags.whole_program_rebuild then
-+            Location.prerr_warning Location.none
-+              (Warnings.Module_compiled_without_lto info.ui_name);
++        if Config.cmx_contains_all_code then
++          (* A member without stored code is fully legitimate here: whether
++             it can take part in a -use-lto link is only known, and only
++             reported (warning 76), at that link. *)
 +          Cmx_format.Flambda
 +            Export_info.( empty_with_code ~code:export_info.code )
-+        end
 +        else
 +          Cmx_format.Flambda Export_info.empty
 +    | Clambda _ -> Cmx_format.Clambda Clambda.Value_unknown
@@ -142,18 +137,10 @@ index 823b07db3a..26b7523a65 100644
  
  let create_archive file_list lib_name =
 diff --git a/asmcomp/asmlink.ml b/asmcomp/asmlink.ml
-index 19d1f04589..39266462fe 100644
+index 19d1f04589..c6e32164e5 100644
 --- a/asmcomp/asmlink.ml
 +++ b/asmcomp/asmlink.ml
-@@ -30,6 +30,7 @@ type error =
-   | Assembler_error of filepath
-   | Linking_error of int
-   | Missing_cmx of filepath * modname
-+  | Module_compiled_without_lto of modname
-   | Link_error of Linkdeps.error
- 
- exception Error of error
-@@ -203,7 +204,7 @@ let make_globals_map units_list ~crc_interfaces =
+@@ -203,7 +203,7 @@ let make_globals_map units_list ~crc_interfaces =
        (name, intf, None, []) :: acc)
      crc_interfaces defined
  
@@ -162,7 +149,7 @@ index 19d1f04589..39266462fe 100644
    let need_stdlib =
      let needs_stdlib ({ui_need_stdlib; _}, _, _) = ui_need_stdlib in
      List.exists needs_stdlib units_list
-@@ -243,8 +244,12 @@ let make_startup_file ~ppf_dump units_list ~crc_interfaces =
+@@ -243,8 +243,12 @@ let make_startup_file ~ppf_dump units_list ~crc_interfaces =
          "caml_standard_library_nat" standard_library_default)
    end;
    compile_phrase (Cmm_helpers.global_table name_list);
@@ -177,10 +164,19 @@ index 19d1f04589..39266462fe 100644
    compile_phrase(Cmm_helpers.data_segment_table ("_startup" :: name_list));
    if !Clflags.function_sections then
      compile_phrase
-@@ -336,9 +341,125 @@ let call_linker file_list startup_file output_name =
+@@ -336,9 +340,136 @@ let call_linker file_list startup_file output_name =
    if not (exitcode = 0)
    then raise(Error(Linking_error exitcode))
  
++let units_without_stored_code units_to_link =
++  assert(Config.flambda);
++  List.filter_map (fun (info, _, _) ->
++    match info.Cmx_format.ui_export_info with
++    | Clambda _ -> assert false
++    | Flambda { Export_info.code = None } -> Some info.Cmx_format.ui_name
++    | Flambda { Export_info.code = Some _ } -> None)
++    units_to_link
++
 +let get_flambda_codes units_to_link =
 +  assert(Config.flambda);
 +  List.map (fun (info, _, _) ->
@@ -189,7 +185,9 @@ index 19d1f04589..39266462fe 100644
 +    | Flambda { Export_info.code } ->
 +      match code with
 +      | None ->
-+        raise (Error (Module_compiled_without_lto info.Cmx_format.ui_name))
++        (* [link] only starts a whole-program rebuild once
++           [units_without_stored_code] came back empty. *)
++        assert false
 +      | Some code ->
 +        code)
 +    units_to_link
@@ -304,7 +302,7 @@ index 19d1f04589..39266462fe 100644
    Profile.record_call output_name (fun () ->
      let stdlib = "stdlib.cmxa" in
      let stdexit = "std_exit.cmx" in
-@@ -359,20 +480,21 @@ let link ~ppf_dump objfiles output_name =
+@@ -359,20 +490,36 @@ let link ~ppf_dump objfiles output_name =
      Clflags.ccobjs := !Clflags.ccobjs @ !lib_ccobjs;
      Clflags.all_ccopts := !lib_ccopts @ !Clflags.all_ccopts;
                                                   (* put user's opts first *)
@@ -323,7 +321,22 @@ index 19d1f04589..39266462fe 100644
 -           startup_obj output_name)
 -      ~always:(fun () -> remove_file startup_obj)
 +    let removed_objects, object_files, make_startup =
-+      if !Clflags.whole_program_rebuild && Config.flambda then
++      let whole_program_rebuild =
++        !Clflags.whole_program_rebuild && Config.flambda
++        && (match units_without_stored_code units_tolink with
++            | [] -> true
++            | missing ->
++                (* The only point where -use-lto actually meets each module:
++                   report the ones that cannot take part and link normally.
++                   [-warn-error +76] turns the fallback into a failure. *)
++                List.iter
++                  (fun name ->
++                     Location.prerr_warning Location.none
++                       (Warnings.Module_compiled_without_lto name))
++                  missing;
++                false)
++      in
++      if whole_program_rebuild then
 +        link_whole_program ~backend ~ppf_dump ~crc_interfaces units_tolink
 +      else
 +        [],
@@ -340,22 +353,8 @@ index 19d1f04589..39266462fe 100644
    )
  
  (* Error report *)
-@@ -419,6 +541,13 @@ let report_error_doc ppf = function
-         Location.Doc.quoted_filename filename
-         Style.inline_code "-I"
-         Style.inline_code (name^".cmx")
-+  | Module_compiled_without_lto name ->
-+      fprintf ppf
-+        "@[<hov>Module %a@ was compiled without the %a option,@ \
-+         which is required for linking with %a.@]"
-+        Style.inline_code name
-+        Style.inline_code "-lto"
-+        Style.inline_code "-use-lto"
-   | Link_error e ->
-       Linkdeps.report_error_doc ~print_filename:Location.Doc.filename ppf e
- 
 diff --git a/asmcomp/asmlink.mli b/asmcomp/asmlink.mli
-index 4a62aa9874..890839d649 100644
+index 4a62aa9874..2ece479246 100644
 --- a/asmcomp/asmlink.mli
 +++ b/asmcomp/asmlink.mli
 @@ -18,7 +18,9 @@
@@ -369,14 +368,6 @@ index 4a62aa9874..890839d649 100644
  
  val link_shared: ppf_dump:formatter -> string list -> string -> unit
  
-@@ -38,6 +40,7 @@ type error =
-   | Assembler_error of filepath
-   | Linking_error of int
-   | Missing_cmx of filepath * modname
-+  | Module_compiled_without_lto of modname
-   | Link_error of Linkdeps.error
- 
- exception Error of error
 diff --git a/asmcomp/asmpackager.ml b/asmcomp/asmpackager.ml
 index 3cec13386c..497124394d 100644
 --- a/asmcomp/asmpackager.ml
@@ -493,6 +484,96 @@ index 39508cec63..65a0099040 100644
  
  exception Error of error
  
+diff --git a/configure b/configure
+index b159afee80..51acfafe92 100755
+--- a/configure
++++ b/configure
+@@ -831,6 +831,7 @@ windows_unicode
+ cmm_invariants
+ flambda_invariants
+ flambda
++lto
+ frame_pointers
+ reserved_header_bits
+ install_ocamlnat
+@@ -1050,6 +1051,7 @@ enable_installing_bytecode_programs
+ enable_native_compiler
+ enable_flambda
+ enable_flambda_invariants
++enable_lto
+ enable_cmm_invariants
+ with_target_sh
+ with_additional_stublibsdir
+@@ -1762,6 +1764,7 @@ Optional Features:
+   --enable-flambda        enable flambda optimizations
+   --enable-flambda-invariants
+                           enable invariants checks in flambda
++  --enable-lto            enable linking time optimizations
+   --enable-cmm-invariants enable invariants checks in Cmm
+   --enable-reserved-header-bits=BITS
+                           reserve BITS (between 0 and 31) bits in block
+@@ -4322,6 +4325,13 @@ then :
+ fi
+ 
+ 
++# Check whether --enable-lto was given.
++if test ${enable_lto+y}
++then :
++  enableval=$enable_lto;
++fi
++
++
+ # Check whether --enable-cmm-invariants was given.
+ if test ${enable_cmm_invariants+y}
+ then :
+@@ -24030,6 +24040,13 @@ else $as_nop
+   flambda_invariants=false
+ fi
+ 
++if test x"$enable_lto" = "xyes"
++then :
++  lto=true
++else $as_nop
++  lto=false
++fi
++
+ if $flambda
+ then :
+   CMX_MAGIC_NUMBER=Caml1999y037
+diff --git a/configure.ac b/configure.ac
+index 167629fbbf..88a95c3bbe 100644
+--- a/configure.ac
++++ b/configure.ac
+@@ -279,6 +279,7 @@ AC_SUBST([reserved_header_bits])
+ AC_SUBST([frame_pointers])
+ AC_SUBST([flambda])
+ AC_SUBST([flambda_invariants])
++AC_SUBST([lto])
+ AC_SUBST([cmm_invariants])
+ AC_SUBST([windows_unicode])
+ AC_SUBST([align_double])
+@@ -648,6 +649,10 @@ AC_ARG_ENABLE([flambda-invariants],
+   [AS_HELP_STRING([--enable-flambda-invariants],
+     [enable invariants checks in flambda])])
+ 
++AC_ARG_ENABLE([lto],
++  [AS_HELP_STRING([--enable-lto],
++    [enable linking time optimizations])])
++
+ AC_ARG_ENABLE([cmm-invariants],
+   [AS_HELP_STRING([--enable-cmm-invariants],
+     [enable invariants checks in Cmm])])
+@@ -2899,6 +2904,10 @@ AS_IF([test x"$enable_flambda" = "xyes"],
+   [flambda=false
+   flambda_invariants=false])
+ 
++AS_IF([test x"$enable_lto" = "xyes"],
++  [lto=true],
++  [lto=false])
++
+ AS_IF([$flambda],
+   [CMX_MAGIC_NUMBER=CMX_FLAMBDA__MAGIC_NUMBER
+   CMXA_MAGIC_NUMBER=CMXA_FLAMBDA__MAGIC_NUMBER],
 diff --git a/driver/compenv.ml b/driver/compenv.ml
 index 15fbdea0a3..e870a280d9 100644
 --- a/driver/compenv.ml
@@ -587,43 +668,6 @@ index 8005603861..1b36566c6c 100644
   (libraries ocamloptcomp ocamlmiddleend ocamlcommon runtime stdlib)
   (modules optmain))
  
-diff --git a/middle_end/compilenv.ml b/middle_end/compilenv.ml
-index d568bbcd43..d85418b739 100644
---- a/middle_end/compilenv.ml
-+++ b/middle_end/compilenv.ml
-@@ -360,9 +360,32 @@ let need_send_fun n =
- let need_stdlib_location () =
-   current_unit.ui_need_stdlib <- true
- 
-+let check_required_modules_are_compiled_with_lto () =
-+  Hashtbl.iter (fun unit_name unit ->
-+      match unit with
-+      | None ->
-+          (* This was compiled with opaque: there is no way to check,
-+             we must delay that to the link. *)
-+          ()
-+      | Some unit ->
-+          match (get_flambda_export_info unit).code with
-+          | None ->
-+              Location.prerr_warning Location.none
-+                (Warnings.Module_compiled_without_lto unit_name)
-+          | Some _ ->
-+              ())
-+    global_infos_table
-+
- (* Write the description of the current unit *)
- 
- let write_unit_info info filename =
-+  (* Only worth reporting when this compilation is itself heading for a
-+     -use-lto link: a code-less dependency (an -opaque module) is fully
-+     legitimate otherwise, and the whole-program link has its own error for
-+     the case that matters. *)
-+  if Config.flambda && Config.cmx_contains_all_code
-+     && !Clflags.whole_program_rebuild then
-+    check_required_modules_are_compiled_with_lto ();
-   let oc = open_out_bin filename in
-   output_string oc cmx_magic_number;
-   output_value oc info;
 diff --git a/middle_end/flambda/build_export_info.ml b/middle_end/flambda/build_export_info.ml
 index 89dcc3beca..dc9d787d49 100644
 --- a/middle_end/flambda/build_export_info.ml
@@ -1413,7 +1457,7 @@ index 10c80c2822..87ae5645b4 100644
  (** Whether ar supports @FILE arguments. *)
  
 diff --git a/utils/warnings.ml b/utils/warnings.ml
-index fa58cb3fc0..588bc80d0b 100644
+index fa58cb3fc0..ee7fccf5d5 100644
 --- a/utils/warnings.ml
 +++ b/utils/warnings.ml
 @@ -115,6 +115,7 @@ type t =
@@ -1439,27 +1483,29 @@ index fa58cb3fc0..588bc80d0b 100644
  
  type description =
    { number : int;
-@@ -552,6 +554,10 @@ let descriptions = [
+@@ -552,6 +554,11 @@ let descriptions = [
      description = "A tuple pattern ends in .. but fully matches its expected \
                     type.";
      since = since 5 4 };
 +  { number = 76;
 +    names = ["module-compiled-without-lto"];
-+    description = "Dependency on a module compiled without -lto.";
++    description = "A -use-lto link met a module without stored \
++                   whole-program code.";
 +    since = since 5 4 };
  ]
  
  let name_to_number =
-@@ -1262,6 +1268,13 @@ let message = function
+@@ -1262,6 +1269,14 @@ let message = function
          "This tuple pattern@ unnecessarily@ ends in %a,@ as@ it@ explicitly@ \
           matches@ all@ components@ of@ its@ expected@ type."
          Style.inline_code ".."
 +  | Module_compiled_without_lto name ->
 +      msg
-+        "The required module %a@ was built without %a.@ \
-+         Linking it in %a mode will probably not be possible."
++        "Module %a@ carries@ no@ stored@ whole-program@ code@ \
++         (it@ was@ built@ by@ a@ compiler@ configured@ without@ %a),@ \
++         so@ %a@ is@ ignored@ for@ this@ link."
 +        Style.inline_code name
-+        Style.inline_code "-lto"
++        Style.inline_code "--enable-lto"
 +        Style.inline_code "-use-lto"
  ;;
  
@@ -1476,94 +1522,6 @@ index 5a19781703..3b14da1a96 100644
  
  type alert = {kind:string; message:string; def:loc; use:loc}
  
-diff --git a/configure b/configure
---- a/configure
-+++ b/configure
-@@ -831,6 +831,7 @@
- cmm_invariants
- flambda_invariants
- flambda
-+lto
- frame_pointers
- reserved_header_bits
- install_ocamlnat
-@@ -1050,6 +1051,7 @@
- enable_native_compiler
- enable_flambda
- enable_flambda_invariants
-+enable_lto
- enable_cmm_invariants
- with_target_sh
- with_additional_stublibsdir
-@@ -1762,6 +1764,7 @@
-   --enable-flambda        enable flambda optimizations
-   --enable-flambda-invariants
-                           enable invariants checks in flambda
-+  --enable-lto            enable linking time optimizations
-   --enable-cmm-invariants enable invariants checks in Cmm
-   --enable-reserved-header-bits=BITS
-                           reserve BITS (between 0 and 31) bits in block
-@@ -4322,6 +4325,13 @@
- fi
- 
- 
-+# Check whether --enable-lto was given.
-+if test ${enable_lto+y}
-+then :
-+  enableval=$enable_lto;
-+fi
-+
-+
- # Check whether --enable-cmm-invariants was given.
- if test ${enable_cmm_invariants+y}
- then :
-@@ -24028,6 +24038,13 @@
- else $as_nop
-   flambda=false
-   flambda_invariants=false
-+fi
-+
-+if test x"$enable_lto" = "xyes"
-+then :
-+  lto=true
-+else $as_nop
-+  lto=false
- fi
- 
- if $flambda
-diff --git a/configure.ac b/configure.ac
---- a/configure.ac
-+++ b/configure.ac
-@@ -279,6 +279,7 @@
- AC_SUBST([frame_pointers])
- AC_SUBST([flambda])
- AC_SUBST([flambda_invariants])
-+AC_SUBST([lto])
- AC_SUBST([cmm_invariants])
- AC_SUBST([windows_unicode])
- AC_SUBST([align_double])
-@@ -648,6 +649,10 @@
-   [AS_HELP_STRING([--enable-flambda-invariants],
-     [enable invariants checks in flambda])])
- 
-+AC_ARG_ENABLE([lto],
-+  [AS_HELP_STRING([--enable-lto],
-+    [enable linking time optimizations])])
-+
- AC_ARG_ENABLE([cmm-invariants],
-   [AS_HELP_STRING([--enable-cmm-invariants],
-     [enable invariants checks in Cmm])])
-@@ -2899,6 +2904,10 @@
-   [flambda=false
-   flambda_invariants=false])
- 
-+AS_IF([test x"$enable_lto" = "xyes"],
-+  [lto=true],
-+  [lto=false])
-+
- AS_IF([$flambda],
-   [CMX_MAGIC_NUMBER=CMX_FLAMBDA__MAGIC_NUMBER
-   CMXA_MAGIC_NUMBER=CMXA_FLAMBDA__MAGIC_NUMBER],
 -- 
 2.55.0
 

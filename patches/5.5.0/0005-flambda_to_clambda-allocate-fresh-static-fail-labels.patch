@@ -1,4 +1,4 @@
-From 48fd18ce473128f176a1b92ba354032699a63861 Mon Sep 17 00:00:00 2001
+From 8716fc688d190152a5c897e58bf6e5f7a556a483 Mon Sep 17 00:00:00 2001
 From: Thomas Gazagnaire <thomas@gazagnaire.org>
 Date: Mon, 20 Jul 2026 10:52:14 -0700
 Subject: [PATCH] flambda_to_clambda: allocate fresh static-fail labels for
@@ -64,10 +64,10 @@ the function whose duplicated labels first exposed the bug.
  4 files changed, 62 insertions(+), 2 deletions(-)
 
 diff --git a/asmcomp/asmlink.ml b/asmcomp/asmlink.ml
-index 39266462fe..9b2e1daec8 100644
+index c6e32164e5..8885ca588d 100644
 --- a/asmcomp/asmlink.ml
 +++ b/asmcomp/asmlink.ml
-@@ -383,6 +383,28 @@ let link_whole_program ~backend ~ppf_dump ~crc_interfaces units_to_link =
+@@ -393,6 +393,28 @@ let link_whole_program ~backend ~ppf_dump ~crc_interfaces units_to_link =
    in
    Compilation_unit.set_current compilation_unit;
    let program = Flambda_utils.replace_compilation_unit_of_symbols compilation_unit program in
