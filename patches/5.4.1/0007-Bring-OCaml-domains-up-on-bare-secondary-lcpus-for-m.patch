@@ -25,7 +25,7 @@ diff --git a/runtime/domain.c b/runtime/domain.c
 index 221c66e..f3ba5df 100644
 --- a/runtime/domain.c
 +++ b/runtime/domain.c
-@@ -1381,6 +1381,67 @@ CAMLprim value caml_domain_spawn(value callback, value term_sync)
+@@ -1381,6 +1381,69 @@ CAMLprim value caml_domain_spawn(value callback, value term_sync)
  
    CAMLreturn (Val_long(p.unique_id));
  }
@@ -56,7 +56,9 @@ index 221c66e..f3ba5df 100644
 +    ctl[0] = -1; __sync_synchronize(); return;
 +  }
 +  domain_self->tid = pthread_self();
-+  install_backup_thread(domain_self);
++  /* DIAGNOSTIC: skip the backup thread -- pthread_create for it deadlocks on a
++     secondary lcpu (unikraft#587). Proves whether the rest works end to end. */
++  /* install_backup_thread(domain_self); */
 +  /* Per-domain init a normally-spawned domain gets; effect/fiber libraries
 +     register domain-local state here. */
 +  caml_domain_initialize_hook();
