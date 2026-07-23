@@ -25,7 +25,7 @@ diff --git a/runtime/domain.c b/runtime/domain.c
 index 221c66e..f3ba5df 100644
 --- a/runtime/domain.c
 +++ b/runtime/domain.c
-@@ -1381,6 +1381,58 @@ CAMLprim value caml_domain_spawn(value callback, value term_sync)
+@@ -1381,6 +1381,67 @@ CAMLprim value caml_domain_spawn(value callback, value term_sync)
  
    CAMLreturn (Val_long(p.unique_id));
  }
@@ -48,6 +48,7 @@ index 221c66e..f3ba5df 100644
 +     domain_create. Without the backup thread a blocking section with several
 +     domains live cannot service STW requests. */
 +  void *signal_stack = caml_init_signal_stack();
++  if (signal_stack == NULL) { ctl[0] = -3; __sync_synchronize(); return; }
 +  if (domain_self == NULL)
 +    domain_create(caml_params->init_minor_heap_wsz, parent);
 +  if (domain_self == NULL) {
@@ -59,25 +60,33 @@ index 221c66e..f3ba5df 100644
 +  /* Per-domain init a normally-spawned domain gets; effect/fiber libraries
 +     register domain-local state here. */
 +  caml_domain_initialize_hook();
-+  /* Allocate this domain's domain-local storage. Domain.spawn's body runs this
-+     via DLS.create_dls; a domain brought up outside spawn must too, or
-+     Domain.DLS.get -- used by Eio's Fiber_context.make_root -- faults on the
-+     uninitialised state. The stdlib registers it under "caml_lcpu_dls_init". */
++  /* caml_callback_exn does not propagate: a raised exception must not bypass
++     the termination and cleanup below. Publish a failure code but always
++     terminate. The DLS init (Domain.spawn runs it via DLS.create_dls; a domain
++     brought up outside spawn must too, or Domain.DLS.get faults) and the entry
++     both run this way. */
++  long fail = 0;
 +  const value *dls_init = caml_named_value("caml_lcpu_dls_init");
-+  if (dls_init != NULL) caml_callback(*dls_init, Val_unit);
++  if (dls_init != NULL
++      && Is_exception_result(caml_callback_exn(*dls_init, Val_unit)))
++    fail = -4;
 +  const value *entry = caml_named_value("mirage_lcpu_entry");
-+  if (entry != NULL) {
-+    ctl[0] = 1; __sync_synchronize();
-+    caml_callback(*entry, Val_long(ctl[2]));
++  if (entry == NULL) {
++    fail = -2;
 +  } else {
-+    ctl[0] = -2; __sync_synchronize();
++    ctl[0] = 1; __sync_synchronize();
++    if (Is_exception_result(caml_callback_exn(*entry, Val_long(ctl[2]))))
++      fail = -5;
 +  }
 +  /* Terminate on every path once the domain exists: join its systhreads, leave
-+     the stop-the-world set, release its roots and heaps. Skipping it leaves a
-+     dead domain in the STW set, deadlocking a later GC or shutdown. [false]:
-+     never the last domain. */
++     the stop-the-world set, release its roots and heaps. Then clear the
++     thread-local domain pointer so a later dispatch onto this core creates a
++     fresh domain rather than reusing the terminated one. [false]: never the
++     last domain. */
 +  caml_domain_terminate(false);
++  domain_self = NULL;
 +  caml_free_signal_stack(signal_stack);
++  if (fail) { ctl[0] = fail; __sync_synchronize(); }
 +  ctl[4]++;
 +  __sync_synchronize();
 +}
