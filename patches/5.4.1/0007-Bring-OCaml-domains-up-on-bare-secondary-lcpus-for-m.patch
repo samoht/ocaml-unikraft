@@ -25,7 +25,7 @@ diff --git a/runtime/domain.c b/runtime/domain.c
 index 221c66e..f3ba5df 100644
 --- a/runtime/domain.c
 +++ b/runtime/domain.c
-@@ -1381,6 +1381,44 @@ CAMLprim value caml_domain_spawn(value callback, value term_sync)
+@@ -1381,6 +1381,58 @@ CAMLprim value caml_domain_spawn(value callback, value term_sync)
  
    CAMLreturn (Val_long(p.unique_id));
  }
@@ -43,11 +43,21 @@ index 221c66e..f3ba5df 100644
 +                                    volatile long *ctl)
 +{
 +  ctl[0] = 2; __sync_synchronize();
++  /* Reproduce domain_thread_func's lifecycle so a domain brought up here is a
++     full STW participant: signal stack, thread id, and backup thread, not just
++     domain_create. Without the backup thread a blocking section with several
++     domains live cannot service STW requests. */
++  void *signal_stack = caml_init_signal_stack();
 +  if (domain_self == NULL)
 +    domain_create(caml_params->init_minor_heap_wsz, parent);
-+  if (domain_self == NULL) { ctl[0] = -1; __sync_synchronize(); return; }
-+  /* Same per-domain init a normally-spawned domain gets (domain_thread_func);
-+     effect/fiber libraries register domain-local state here. */
++  if (domain_self == NULL) {
++    caml_free_signal_stack(signal_stack);
++    ctl[0] = -1; __sync_synchronize(); return;
++  }
++  domain_self->tid = pthread_self();
++  install_backup_thread(domain_self);
++  /* Per-domain init a normally-spawned domain gets; effect/fiber libraries
++     register domain-local state here. */
 +  caml_domain_initialize_hook();
 +  /* Allocate this domain's domain-local storage. Domain.spawn's body runs this
 +     via DLS.create_dls; a domain brought up outside spawn must too, or
@@ -56,14 +66,18 @@ index 221c66e..f3ba5df 100644
 +  const value *dls_init = caml_named_value("caml_lcpu_dls_init");
 +  if (dls_init != NULL) caml_callback(*dls_init, Val_unit);
 +  const value *entry = caml_named_value("mirage_lcpu_entry");
-+  if (entry == NULL) { ctl[0] = -2; __sync_synchronize(); return; }
-+  ctl[0] = 1; __sync_synchronize();
-+  caml_callback(*entry, Val_long(ctl[2]));
-+  /* Take this domain out of OCaml the way sync_and_terminate does: join its
-+     systhreads and leave the stop-the-world set. Skipping it leaves a dead
-+     domain in the STW set, deadlocking a later GC or shutdown. [false]: never
-+     the last domain. */
++  if (entry != NULL) {
++    ctl[0] = 1; __sync_synchronize();
++    caml_callback(*entry, Val_long(ctl[2]));
++  } else {
++    ctl[0] = -2; __sync_synchronize();
++  }
++  /* Terminate on every path once the domain exists: join its systhreads, leave
++     the stop-the-world set, release its roots and heaps. Skipping it leaves a
++     dead domain in the STW set, deadlocking a later GC or shutdown. [false]:
++     never the last domain. */
 +  caml_domain_terminate(false);
++  caml_free_signal_stack(signal_stack);
 +  ctl[4]++;
 +  __sync_synchronize();
 +}
