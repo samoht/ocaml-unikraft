@@ -1,4 +1,4 @@
-From 8485a9b0644602a9c8422d91e3830311b8764d69 Mon Sep 17 00:00:00 2001
+From 80acec88a09d2cb6db911ef94c8176a7f2cd923e Mon Sep 17 00:00:00 2001
 From: Thomas Gazagnaire <thomas@gazagnaire.org>
 Date: Mon, 20 Jul 2026 13:30:44 -0700
 Subject: [PATCH] asmlink: field-aware single-use collapse for the -use-lto
@@ -39,7 +39,7 @@ seeding cone with it.  All reference outputs unchanged.
  1 file changed, 215 insertions(+)
 
 diff --git a/asmcomp/asmlink.ml b/asmcomp/asmlink.ml
-index 5210f2baa0..66658b5052 100644
+index 75452c6681..0a88f68626 100644
 --- a/asmcomp/asmlink.ml
 +++ b/asmcomp/asmlink.ml
 @@ -1090,6 +1090,220 @@ let count_format_entry_sites (program : Flambda.program) =
@@ -263,7 +263,7 @@ index 5210f2baa0..66658b5052 100644
  let link_whole_program ~backend ~ppf_dump ~crc_interfaces units_to_link =
    let codes = get_flambda_codes units_to_link in
    let program =
-@@ -1168,6 +1382,7 @@ let link_whole_program ~backend ~ppf_dump ~crc_interfaces units_to_link =
+@@ -1190,6 +1404,7 @@ let link_whole_program ~backend ~ppf_dump ~crc_interfaces units_to_link =
        Remove_unused_program_constructs.remove_unused_program_constructs program
      in
      let program = preeval_initializers program in

@@ -1,4 +1,4 @@
-From 8ba32b32d02dcd19bfc31a21539f3f11de2cb8dc Mon Sep 17 00:00:00 2001
+From 7558bae4e9ea0c3a9466d9d4f8660e2d119c4877 Mon Sep 17 00:00:00 2001
 From: Thomas Gazagnaire <thomas@gazagnaire.org>
 Date: Mon, 20 Jul 2026 10:52:14 -0700
 Subject: [PATCH] asmlink: link-time evaluation of module initializers under
@@ -37,7 +37,7 @@ unevaluable for the interpreter.
  1 file changed, 295 insertions(+)
 
 diff --git a/asmcomp/asmlink.ml b/asmcomp/asmlink.ml
-index 5d6ea40a4c..30128e0327 100644
+index 45d615eeb4..734c14b1eb 100644
 --- a/asmcomp/asmlink.ml
 +++ b/asmcomp/asmlink.ml
 @@ -741,6 +741,296 @@ let remove_pure_initializers ~pure (program : Flambda.program) =
@@ -337,7 +337,7 @@ index 5d6ea40a4c..30128e0327 100644
  let link_whole_program ~backend ~ppf_dump ~crc_interfaces units_to_link =
    let codes = get_flambda_codes units_to_link in
    let program =
-@@ -771,6 +1061,7 @@ let link_whole_program ~backend ~ppf_dump ~crc_interfaces units_to_link =
+@@ -793,6 +1083,7 @@ let link_whole_program ~backend ~ppf_dump ~crc_interfaces units_to_link =
      let program =
        Remove_unused_program_constructs.remove_unused_program_constructs program
      in
@@ -345,7 +345,7 @@ index 5d6ea40a4c..30128e0327 100644
      let program =
        let pure = compute_pure_functions program in
        remove_pure_initializers ~pure program
-@@ -798,6 +1089,10 @@ let link_whole_program ~backend ~ppf_dump ~crc_interfaces units_to_link =
+@@ -820,6 +1111,10 @@ let link_whole_program ~backend ~ppf_dump ~crc_interfaces units_to_link =
    in
    let cleaned_program = Lift_constants.lift_constants ~backend cleaned_program in
    let cleaned_program = Share_constants.share_constants cleaned_program in

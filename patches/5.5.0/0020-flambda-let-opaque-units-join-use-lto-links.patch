@@ -1,4 +1,4 @@
-From e4889394a46c6b9e56bd90912425e66f8a902ab4 Mon Sep 17 00:00:00 2001
+From 574f2bdfc34e3bfbc1d3a2b2aeb8c63e33e239aa Mon Sep 17 00:00:00 2001
 From: Thomas Gazagnaire <thomas@gazagnaire.org>
 Date: Wed, 22 Jul 2026 12:58:11 -0700
 Subject: [PATCH] flambda: let -opaque units join -use-lto links

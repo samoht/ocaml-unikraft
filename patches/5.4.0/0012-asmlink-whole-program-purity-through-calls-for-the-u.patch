@@ -1,4 +1,4 @@
-From 5a19b4b50f75749d38ae509dc7f27b52bb7d00f7 Mon Sep 17 00:00:00 2001
+From 3b005acc98250a0a11f0818ff514b1d5b916b530 Mon Sep 17 00:00:00 2001
 From: Thomas Gazagnaire <thomas@gazagnaire.org>
 Date: Mon, 20 Jul 2026 10:51:37 -0700
 Subject: [PATCH] asmlink: whole-program purity through calls for the -use-lto
@@ -45,7 +45,7 @@ reverted and this pass in place, lto_dup_labels still dies with
  1 file changed, 167 insertions(+)
 
 diff --git a/asmcomp/asmlink.ml b/asmcomp/asmlink.ml
-index e393bbd976..ab7edf5f8e 100644
+index a91b0c50c1..831a4b522e 100644
 --- a/asmcomp/asmlink.ml
 +++ b/asmcomp/asmlink.ml
 @@ -560,6 +560,169 @@ let why_live ~ppf_dump ~pattern (program : Flambda.program) =
@@ -218,7 +218,7 @@ index e393bbd976..ab7edf5f8e 100644
  let link_whole_program ~backend ~ppf_dump ~crc_interfaces units_to_link =
    let codes = get_flambda_codes units_to_link in
    let program =
-@@ -590,6 +753,10 @@ let link_whole_program ~backend ~ppf_dump ~crc_interfaces units_to_link =
+@@ -612,6 +775,10 @@ let link_whole_program ~backend ~ppf_dump ~crc_interfaces units_to_link =
      let program =
        Remove_unused_program_constructs.remove_unused_program_constructs program
      in

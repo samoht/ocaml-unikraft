@@ -1,4 +1,4 @@
-From 310768583d09c0e4c78dba613739dd558c54a046 Mon Sep 17 00:00:00 2001
+From 034d7b19312a4ffb1c7928d257df5c9ed41fedd3 Mon Sep 17 00:00:00 2001
 From: Thomas Gazagnaire <thomas@gazagnaire.org>
 Date: Mon, 20 Jul 2026 10:51:36 -0700
 Subject: [PATCH] flambda_to_clambda: allocate fresh static-fail labels for
@@ -25,6 +25,31 @@ environment and looked up at each Static_raise, so labels are unique within
 every lowered function regardless of the deserialised ids.  For separate
 compilation this only renumbers labels, leaving behaviour unchanged.
 
+The same counter overlap bites a second time at the Flambda level: the
+cleanup's simplifier renames the static exceptions of every body it
+duplicates via Freshening, minting ids from this process's
+Lambda.next_raise_count -- which counts from zero, exactly like every
+producing compilation did.  A minted id equal to a deserialised one puts
+two unrelated catches with the same number into one scope tree (observed
+on a tls parsing function, an inlined callee's catch minting its encloser's
+id).  Freshening and use-tracking are keyed by that id, so the next round
+that duplicates the region attributes raises to the wrong catch and
+restructures around them, leaving the remainder orphaned outside any
+catch; the Cmm invariant check then rejects the lowered function
+("Continuation N was used but never bound").  Move the counter past every
+deserialised id right after concatenation (Lambda.ensure_raise_count), so
+link-minted ids are fresh program-wide.  The corrupting shape needs a
+kept function carrying the same-id pair across cleanup rounds; it
+reproduced on tls- and sql-heavy links but is too choreography-dependent
+to pin as a unit test without over-fitting.
+
+to_clambda's fallback for a raise found outside the scope of its catch
+used to re-emit the historical numbering; such a term is ill-formed and
+every lowering of it miscompiles, so it is now a fatal error naming the
+exception -- the whole-program pipeline deliberately skips
+Flambda_invariants, and this is the earliest point that still fails
+loudly on builds that do not pass -dcmm-invariants.
+
 The new test links static-exception-heavy code (or-patterns, guards,
 ranges, for/while loops, exceptions, and String/Bytes.escaped) from four
 units with -use-lto -dcmm-invariants, so a label collision fails the Cmm
@@ -32,11 +57,77 @@ invariant check at link time, and check-program-output guards against a
 silent miscompilation.  lib_escape exercises Stdlib__Bytes.unsafe_escape,
 the function whose duplicated labels first exposed the bug.
 ---
- middle_end/flambda/flambda_to_clambda.ml | 29 ++++++++++++++++++++++--
- 1 file changed, 27 insertions(+), 2 deletions(-)
+ asmcomp/asmlink.ml                       | 22 +++++++++++++++
+ lambda/lambda.ml                         |  3 +++
+ lambda/lambda.mli                        |  5 ++++
+ middle_end/flambda/flambda_to_clambda.ml | 34 ++++++++++++++++++++++--
+ 4 files changed, 62 insertions(+), 2 deletions(-)
 
+diff --git a/asmcomp/asmlink.ml b/asmcomp/asmlink.ml
+index 285b3138fa..c47241535b 100644
+--- a/asmcomp/asmlink.ml
++++ b/asmcomp/asmlink.ml
+@@ -365,6 +365,28 @@ let link_whole_program ~backend ~ppf_dump ~crc_interfaces units_to_link =
+   in
+   Compilation_unit.set_current compilation_unit;
+   let program = Flambda_utils.replace_compilation_unit_of_symbols compilation_unit program in
++  (* Static exceptions in the concatenated program keep the numbering of
++     their producing compilations, each of which counted from zero -- as
++     does this process's [Lambda.next_raise_count], from which the
++     simplifier's freshening renames the static exceptions of every body it
++     duplicates.  A minted id equal to a deserialised one puts two unrelated
++     catches with the same number into one scope tree, and the next
++     duplication that renames either of them captures or orphans the raises
++     of the other, since the freshening map is keyed by the id.  Move the
++     counter past every deserialised id before any simplification runs. *)
++  let () =
++    let max_id = ref 0 in
++    let note (expr : Flambda.t) =
++      match expr with
++      | Static_raise (i, _) | Static_catch (i, _, _, _) ->
++        let i = Static_exception.to_int i in
++        if i > !max_id then max_id := i
++      | _ -> ()
++    in
++    Flambda_iterators.iter_exprs_at_toplevel_of_program program
++      ~f:(fun expr -> Flambda_iterators.iter note (fun _ -> ()) expr);
++    Lambda.ensure_raise_count !max_id
++  in
+   (* No [Flambda_invariants.check_exn] here: the concatenated program mixes
+      variables from several compilation units (their [Set_of_closures_id] etc.
+      deliberately keep their originating unit, which [Flambda_to_clambda] relies
+diff --git a/lambda/lambda.ml b/lambda/lambda.ml
+index 45c16b0973..f9d2e6019d 100644
+--- a/lambda/lambda.ml
++++ b/lambda/lambda.ml
+@@ -678,6 +678,9 @@ let next_raise_count () =
+   incr raise_count ;
+   !raise_count
+ 
++let ensure_raise_count n =
++  if n > !raise_count then raise_count := n
++
+ (* Anticipated staticraise, for guards *)
+ let staticfail = Lstaticraise (0,[])
+ 
+diff --git a/lambda/lambda.mli b/lambda/lambda.mli
+index 0a17deea5a..f2a01bcd9c 100644
+--- a/lambda/lambda.mli
++++ b/lambda/lambda.mli
+@@ -511,6 +511,11 @@ val tag_of_lazy_tag : lazy_block_tag -> int
+ (* Get a new static failure ident *)
+ val next_raise_count : unit -> int
+ 
++(* Move the static-failure counter past ids deserialised from other
++   compilations, so freshly minted ids cannot collide with them (used by
++   the -use-lto whole-program link, whose input carries every unit's ids). *)
++val ensure_raise_count : int -> unit
++
+ val staticfail : lambda (* Anticipated static failure *)
+ 
+ (* Check anticipated failure, substitute its final value *)
 diff --git a/middle_end/flambda/flambda_to_clambda.ml b/middle_end/flambda/flambda_to_clambda.ml
-index 16298318f4..366a9ec790 100644
+index 16298318f4..c5e20e1685 100644
 --- a/middle_end/flambda/flambda_to_clambda.ml
 +++ b/middle_end/flambda/flambda_to_clambda.ml
 @@ -139,6 +139,9 @@ module Env : sig
@@ -73,7 +164,7 @@ index 16298318f4..366a9ec790 100644
        allocated_constant_for_symbol = Symbol.Map.empty;
      }
  
-@@ -177,6 +190,17 @@ end = struct
+@@ -177,6 +190,22 @@ end = struct
      let mutable_var = Mutable_variable.Map.add mut_var id t.mutable_var in
      id, { t with mutable_var; }
  
@@ -84,14 +175,19 @@ index 16298318f4..366a9ec790 100644
 +  let find_static_exception t static_exn =
 +    match Static_exception.Map.find_opt static_exn t.static_exn with
 +    | Some label -> label
-+    (* A raise whose catch is out of scope cannot arise from well-formed
-+       Flambda; fall back to the historical numbering rather than fail. *)
-+    | None -> Static_exception.to_int static_exn
++    | None ->
++      (* A raise whose catch is out of scope cannot arise from well-formed
++         Flambda.  Failing here names the culprit; the alternative is the
++         Cmm invariant check rejecting the lowered function, or a silent
++         miscompilation on builds that skip it. *)
++      Misc.fatal_errorf
++        "[Static_raise] of %a is not in scope of its [Static_catch]"
++        Static_exception.print static_exn
 +
    let add_allocated_const t sym cons =
      { t with
        allocated_constant_for_symbol =
-@@ -308,16 +332,17 @@ let rec to_clambda t env (flam : Flambda.t) : Clambda.ulambda =
+@@ -308,16 +337,17 @@ let rec to_clambda t env (flam : Flambda.t) : Clambda.ulambda =
      let def = Option.map (to_clambda t env) def in
      Ustringswitch (arg, sw, def)
    | Static_raise (static_exn, args) ->
