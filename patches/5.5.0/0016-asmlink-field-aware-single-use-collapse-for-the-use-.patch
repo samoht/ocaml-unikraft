@@ -1,4 +1,4 @@
-From 7f33250777faeed34a0a5041af77388bf63ab1a9 Mon Sep 17 00:00:00 2001
+From 7634f2272006ca2ed681f56ebfa2028409be1f67 Mon Sep 17 00:00:00 2001
 From: Thomas Gazagnaire <thomas@gazagnaire.org>
 Date: Mon, 20 Jul 2026 13:30:44 -0700
 Subject: [PATCH] asmlink: field-aware single-use collapse for the -use-lto
@@ -9,15 +9,22 @@ inliner's only-use heuristic can never fire at the link, even for a
 function with one reachable call site.  Recover it structurally, inside
 the cleanup fixpoint: a closure applied directly at exactly one external
 site, whose closure value is only ever let-bound to feed such applies,
-has that site marked Always_inline; a self-recursive callee in the same
-position, when some argument is structurally constant (a constant,
-symbol, immutable block, or an alias or field projection of one), is
-marked Unroll 1 instead, so each cleanup round peels one constructor of
-a literal argument.  The zero-budget simplification performs the moves,
-the dead projection unreads the block field, the purity pass dummies it,
-and the original declaration dies on the following round.  Explicit
-[@inline never], stubs, and closures referenced as values are left
-alone.
+has that site marked Always_inline.  The zero-budget simplification
+performs the move, the dead projection unreads the block field, the
+purity pass dummies it, and the original declaration dies on the
+following round.  Explicit [@inline never], stubs, self-recursive
+callees, and closures referenced as values are left alone.
+
+Only size-neutral moves are marked, so the cleanup's inlining stage
+cannot grow the program.  Unrolling a recursive callee over a literal
+argument is deliberately not marked: a peel leaves the callee standing
+beside its own copy, and each round exposes more constants than the
+last, so peels compound.  Measured on a 21717-function link, marking
+them turned an 850k-unit program into 18.7M units mid-round and cost
+four times the peak memory, for less elimination than not peeling at
+all -- 9% of code size against 16%.  That specialisation belongs to
+-lto-inline, whose unrolling budgets drive it through the ordinary
+inliner.
 
 Callees that declare their own set of closures are also left alone:
 moving such a body duplicates the declaration under fresh closure ids,
@@ -35,14 +42,14 @@ recursive membership walk -- the whole program now folds: five functions
 retained before, zero after, the gate folding to false and taking the
 seeding cone with it.  All reference outputs unchanged.
 ---
- asmcomp/asmlink.ml | 215 +++++++++++++++++++++++++++++++++++++++++++++
- 1 file changed, 215 insertions(+)
+ asmcomp/asmlink.ml | 174 +++++++++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 174 insertions(+)
 
 diff --git a/asmcomp/asmlink.ml b/asmcomp/asmlink.ml
-index 017cf3bdb6..38ee5ab084 100644
+index 017cf3bdb6..9b19916982 100644
 --- a/asmcomp/asmlink.ml
 +++ b/asmcomp/asmlink.ml
-@@ -1118,6 +1118,220 @@ let count_format_entry_sites (program : Flambda.program) =
+@@ -1118,6 +1118,179 @@ let count_format_entry_sites (program : Flambda.program) =
          expr);
    !sites
  
@@ -63,7 +70,12 @@ index 017cf3bdb6..38ee5ab084 100644
 +   self-recursive functions, closures also referenced as values, and
 +   callees that declare their own sets of closures are left alone; an
 +   indirect call missed by the count only costs a duplicated body until
-+   the field-level cleanup catches up, never correctness. *)
++   the field-level cleanup catches up, never correctness.
++
++   Only size-neutral moves are marked here, so the zero-budget cleanup
++   cannot grow the program.  Unrolling a recursive callee over a literal
++   argument is [-lto-inline]'s job, driven by the ordinary inliner's
++   budgets. *)
 +
 +let mark_single_use_applies (program : Flambda.program) =
 +  let bodies = function_bodies program in
@@ -155,11 +167,6 @@ index 017cf3bdb6..38ee5ab084 100644
 +      !n
 +  in
 +  let self_recursive cid = self_applies cid > 0 in
-+  let external_applies cid =
-+    match Closure_id.Map.find_opt cid !apply_count with
-+    | None -> 0
-+    | Some n -> n - self_applies cid
-+  in
 +  (* Moving a body that declares its own set of closures duplicates the
 +     declaration under fresh closure ids.  When such a closure escapes the
 +     callee -- the generative-injector shape [let inj x = M.V x in
@@ -204,43 +211,6 @@ index 017cf3bdb6..38ee5ab084 100644
 +    && not (self_recursive cid)
 +    && not (declares_closures cid)
 +  in
-+  (* Structurally-constant variables, for gating one unrolling step of a
-+     single-use recursive callee (a device-list walker applied to a
-+     literal): constants, symbols, immutable blocks, and aliases or field
-+     projections thereof. *)
-+  let struct_consts = ref Variable.Set.empty in
-+  let aliases = ref [] in
-+  Flambda_iterators.iter_exprs_at_toplevel_of_program program
-+    ~f:(fun expr ->
-+      Flambda_iterators.iter_all_immutable_let_bindings expr
-+        ~f:(fun var (named : Flambda.named) ->
-+          match named with
-+          | Const _ | Symbol _ | Allocated_const _ | Read_symbol_field _
-+          | Prim (Pmakeblock (_, Immutable, _), _, _) ->
-+            struct_consts := Variable.Set.add var !struct_consts
-+          | Expr (Var a) | Prim (Pfield _, [a], _) ->
-+            aliases := (var, a) :: !aliases
-+          | _ -> ()));
-+  let rec close () =
-+    let changed = ref false in
-+    List.iter (fun (v, a) ->
-+        if Variable.Set.mem a !struct_consts
-+        && not (Variable.Set.mem v !struct_consts) then begin
-+          struct_consts := Variable.Set.add v !struct_consts; changed := true
-+        end) !aliases;
-+    if !changed then close ()
-+  in
-+  close ();
-+  let unroll_eligible cid args =
-+    external_applies cid = 1
-+    && (match Closure_id.Map.find_opt cid bodies with
-+        | Some (decl : Flambda.function_declaration) ->
-+          (match decl.inline with Never_inline -> false | _ -> true)
-+          && not decl.stub
-+        | None -> false)
-+    && List.exists (fun v -> Variable.Set.mem v !struct_consts) args
-+    && not (declares_closures cid)
-+  in
 +  let marked = ref 0 in
 +  let rewrite (expr : Flambda.t) =
 +    match expr with
@@ -248,10 +218,6 @@ index 017cf3bdb6..38ee5ab084 100644
 +      when eligible cid ->
 +      incr marked;
 +      Flambda.Apply { apply with inline = Always_inline }
-+    | Apply ({ kind = Direct cid; args; inline = Default_inline; _ } as apply)
-+      when self_recursive cid && unroll_eligible cid args ->
-+      incr marked;
-+      Flambda.Apply { apply with inline = Unroll 1 }
 +    | e -> e
 +  in
 +  let program =
@@ -263,7 +229,7 @@ index 017cf3bdb6..38ee5ab084 100644
  let link_whole_program ~backend ~ppf_dump ~crc_interfaces units_to_link =
    let codes = get_flambda_codes units_to_link in
    let program =
-@@ -1218,6 +1432,7 @@ let link_whole_program ~backend ~ppf_dump ~crc_interfaces units_to_link =
+@@ -1218,6 +1391,7 @@ let link_whole_program ~backend ~ppf_dump ~crc_interfaces units_to_link =
        Remove_unused_program_constructs.remove_unused_program_constructs program
      in
      let program = preeval_initializers program in
