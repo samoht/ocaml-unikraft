@@ -47,8 +47,16 @@ process_option() {
   # whenever it picks the $'...' form, so this path always ran for those. Do it
   # with sed unconditionally: one branch, portable, same result.
   qopt="'$(printf %s "$opt" | sed "s/'/'\\\\''/g")'"
-  qopt="${qopt//__builddir_temporary_placeholder__/\'\"\$\{LIBDIR\}\"\'}"
-  qopt="${qopt//__unikraftdir_temporary_placeholder__/\'\"\$\{UKLIBDIR\}\"\'}"
+  # Close the single quote, expand the directory in double quotes, reopen it.
+  # The injected text is held in a variable rather than written as a literal
+  # replacement: a literal needs backslash escapes, and bash 3.2 (what macOS
+  # ships) does not strip those the way bash 4 does, so it emitted
+  # '-I\'"$\{LIBDIR\}"\'/include' and left the generated driver unparseable.
+  # A variable replacement is inserted verbatim by both.
+  libdir_inject="'\"\${LIBDIR}\"'"
+  uklibdir_inject="'\"\${UKLIBDIR}\"'"
+  qopt="${qopt//__builddir_temporary_placeholder__/$libdir_inject}"
+  qopt="${qopt//__unikraftdir_temporary_placeholder__/$uklibdir_inject}"
   printf '      %s \\\n' "$qopt"
 }
 
