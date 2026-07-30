@@ -18,6 +18,7 @@ depends: [
 depopts: [
   "ocaml-unikraft-option-debug"
   "ocaml-unikraft-option-9pfs"
+  "ocaml-unikraft-option-smp"
   "ocaml-unikraft-custom-configs"
 ]
 build: [
@@ -31,6 +32,7 @@ build: [
     "OCUKEXTLIBS=musl"
     "OCUKCONFIGOPTS+=debug" {ocaml-unikraft-option-debug:installed}
     "OCUKCONFIGOPTS+=9pfs" {ocaml-unikraft-option-9pfs:installed}
+    "OCUKCONFIGOPTS+=smp" {ocaml-unikraft-option-smp:installed}
     "OCUKCUSTOMCFGDIR=%{ocaml-unikraft-custom-configs:share}%"
       {ocaml-unikraft-custom-configs:installed}
     "UK_CFLAGS=-std=gnu11"
