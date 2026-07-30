@@ -41,12 +41,12 @@ process_option() {
   opt="${opt//"$REALUKLIBSDIR"/__builddir_temporary_placeholder__}"
   opt="${opt//"$UNIKRAFTDIR"/__unikraftdir_temporary_placeholder__}"
   opt="${opt//"$REALUNIKRAFTDIR"/__unikraftdir_temporary_placeholder__}"
-  qopt="${opt@Q}"
-  # Check that it was quoted using the form '...', as we will assume it was when
-  # injecting the variables; if that's not the case, do it using sed
-  if [ -n "${qopt##\'*\'}" ]; then
-    qopt="'$(printf %s "$opt" | sed "s/'/'\\\\''/g")'"
-  fi
+  # Quote as '...', the form the variable injection below assumes. ${opt@Q}
+  # needs bash 4.4 and macOS ships bash 3.2, where it is a fatal "bad
+  # substitution" -- and even where it works its output has to be re-quoted
+  # whenever it picks the $'...' form, so this path always ran for those. Do it
+  # with sed unconditionally: one branch, portable, same result.
+  qopt="'$(printf %s "$opt" | sed "s/'/'\\\\''/g")'"
   qopt="${qopt//__builddir_temporary_placeholder__/\'\"\$\{LIBDIR\}\"\'}"
   qopt="${qopt//__unikraftdir_temporary_placeholder__/\'\"\$\{UKLIBDIR\}\"\'}"
   printf '      %s \\\n' "$qopt"
