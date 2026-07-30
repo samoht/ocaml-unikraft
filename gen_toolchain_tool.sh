@@ -129,8 +129,11 @@ EOF
       printf ')\n    LIBDIR="$basedir/lib/%s"\n' "${b##*/}"
       printf '    set -- \\\n      -D __Unikraft__ \\\n'
       cat "$b"/cflags
-      # Access the compiler base headers, such as x86intrin.h, if needed
-      printf '      -isystem %s \\\n' "${includedir@Q}"
+      # Access the compiler base headers, such as x86intrin.h, if needed.
+      # Quote with sed rather than ${includedir@Q}: that needs bash 4.4 and
+      # macOS ships bash 3.2, where it is a fatal "bad substitution".
+      qincludedir="'$(printf %s "$includedir" | sed "s/'/'\\\\''/g")'"
+      printf '      -isystem %s \\\n' "$qincludedir"
       # A static-PIE backend (OPTIMIZE_PIE) links with -static-pie from its
       # learned ldflags; adding -static beside it makes the driver drop the
       # PIE part, so only the fixed-address backends get it.
